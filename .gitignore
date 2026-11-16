@@ -1,0 +1,28 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Generated data (rebuilt by the ingest script)
+storage/
+*.sqlite
+*.db
+
+# Eval run outputs (summaries we want to keep go in eval/results/)
+eval/runs/
+
+# Model caches
+.cache/
+models/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
