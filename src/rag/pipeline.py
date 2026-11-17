@@ -28,6 +28,7 @@ class Answer:
     cited: list[int]     # 1-based numbers of the sources the answer actually cites
     latency_ms: int
     profile: str
+    model: str           # the LLM model that actually answered (may be a fallback model)
 
 
 class Assistant:
@@ -54,6 +55,7 @@ class Assistant:
             cited=extract_citations(text, len(hits)),
             latency_ms=int((time.perf_counter() - started) * 1000),
             profile=self.profile.name,
+            model=self.llm.last_model,
         )
         self._log(question, answer)
         return answer
@@ -65,7 +67,7 @@ class Assistant:
         record = {
             "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "profile": answer.profile,
-            "llm": self.llm.name,
+            "llm": answer.model,
             "question": question,
             "answer": answer.text,
             "cited": answer.cited,

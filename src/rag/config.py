@@ -21,6 +21,8 @@ class Settings:
     llm_provider: str
     gemini_api_key: str
     gemini_model: str
+    gemini_fallback_models: tuple[str, ...]
+    gemini_timeout_s: int
     ollama_url: str
     ollama_model: str
 
@@ -36,7 +38,13 @@ def get_settings() -> Settings:
         embedding_device=os.getenv("EMBEDDING_DEVICE", "auto"),
         llm_provider=os.getenv("LLM_PROVIDER", "gemini").lower(),
         gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
-        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+        gemini_fallback_models=tuple(
+            m.strip()
+            for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.1-flash-lite,gemini-3.8-flash").split(",")
+            if m.strip()
+        ),
+        gemini_timeout_s=int(os.getenv("GEMINI_TIMEOUT_S", "30")),
         ollama_url=os.getenv("OLLAMA_URL", "http://localhost:11434"),
         ollama_model=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
     )

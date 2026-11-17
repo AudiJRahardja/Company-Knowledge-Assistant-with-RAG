@@ -62,6 +62,7 @@ def to_message_dict(answer: Answer) -> dict:
         "content": answer.text,
         "cited": answer.cited,
         "latency_ms": answer.latency_ms,
+        "model": answer.model,
         "sources": [
             {"title": h.title, "collection": h.collection, "language": h.language,
              "last_updated": h.last_updated, "score": h.score, "source": h.source, "text": h.text}
@@ -104,7 +105,7 @@ for msg in history:
         st.markdown(msg["content"])
         if msg["role"] == "assistant":
             render_sources(msg["sources"], msg["cited"])
-            st.caption(f"{msg['latency_ms'] / 1000:.1f}s")
+            st.caption(f"{msg['latency_ms'] / 1000:.1f}s · {msg['model']}")
 
 if not history:
     st.write("Try asking:")
@@ -127,7 +128,7 @@ if question := st.chat_input("Ask a question in English or Bahasa Indonesia"):
         st.markdown(answer.text)
         msg = to_message_dict(answer)
         render_sources(msg["sources"], msg["cited"])
-        st.caption(f"{answer.latency_ms / 1000:.1f}s")
+        st.caption(f"{answer.latency_ms / 1000:.1f}s · {answer.model}")
 
     history.append({"role": "user", "content": question})
     history.append(msg)
