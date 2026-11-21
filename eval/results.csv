@@ -1,0 +1,7 @@
+date,label,profile,mode,models,n,hit,all,mrr,distinct,facts,correct,faithful,relevant,cited,refusal_ok,false_refusal,stale,leak_rate,source_leak,answer_leak,refused,errors
+2026-11-17 23:12,baseline,internal,retrieval-only,,74,0.97,0.97,0.927,2.581,,,,,,,,,,,,,0
+2026-11-17 23:13,baseline,external,retrieval-only,,72,1.0,0.871,0.929,2.528,,,,,,,,,,,,,0
+2026-11-17 23:13,baseline,leak,retrieval-only,,30,,,,,,,,,,,,,0.0,0.0,,,0
+2026-11-18 00:23,baseline,internal,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,74,0.97,0.97,0.927,2.581,0.969,0.966,1.0,0.962,1.0,1.0,0.0,0.014,,,,,0
+2026-11-21 11:18,baseline,leak,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,30,,,,,,,,,,,,,0.0,0.0,0.0,0.933,0
+2026-11-21 11:19,baseline,external,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,72,1.0,0.871,0.929,2.528,1.0,1.0,0.986,1.0,1.0,1.0,0.0,0.0,,,,,0
