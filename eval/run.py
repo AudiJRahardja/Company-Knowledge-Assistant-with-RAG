@@ -5,7 +5,8 @@
     python -m eval.run --profile leak                security tests (leak rate must be 0)
 
 Useful options:
-    --retrieval-only     only test search (no LLM calls, takes seconds). Good while tuning retrieval.
+    --retrieval-only     only test search, takes seconds. The only LLM calls are rewrites of follow-up
+                         questions (cached). Good while tuning retrieval.
     --no-judge           skip the LLM judge (half the LLM calls); refusals are then detected by keywords
     --label baseline     name for this run in eval/results.csv
     --ids int-01-en,...  run only these questions        --lang en|id    only one language
@@ -38,8 +39,7 @@ from rag.embeddings import Embedder
 from rag.llm import LLMClient, LLMError, Message, get_llm
 from rag.pipeline import Assistant, build_assistant
 from rag.profiles import load_profile
-from rag.retrieval import retrieve
-from rag.store import Hit, KnowledgeStore
+from rag.store import Hit
 
 RUNS_DIR = EVAL_DIR / "runs"
 RESULTS_CSV = EVAL_DIR / "results.csv"
@@ -99,40 +99,43 @@ class CachedLLM:
 # ---------------------------------------------------------------- running one case
 
 class Runner:
-    def __init__(self, embedder: Embedder, llm: CachedLLM | None, use_judge: bool):
+    def __init__(self, embedder: Embedder, llm: CachedLLM | None, use_judge: bool, answer: bool = True):
         self.settings = get_settings()
         self.embedder = embedder
         self.llm = llm
-        self.use_judge = use_judge and llm is not None
+        self.answer = answer and llm is not None  # False = retrieval-only (the LLM may still rewrite follow-ups)
+        self.use_judge = use_judge and self.answer
         self._assistants: dict[str, Assistant] = {}
-        self._stores: dict[str, tuple] = {}
 
     def assistant(self, profile: str) -> Assistant:
+        """The real assistant (same retrieval code as the app). Without an LLM it can only search."""
         if profile not in self._assistants:
-            a = build_assistant(profile, embedder=self.embedder, llm=self.llm, settings=self.settings)
+            a = build_assistant(profile, embedder=self.embedder, llm=self.llm, settings=self.settings,
+                                search_only=self.llm is None)
             a.log_path = None  # keep eval traffic out of the real chat log
             self._assistants[profile] = a
         return self._assistants[profile]
 
-    def search_only(self, profile_name: str, question: str) -> list[Hit]:
-        if profile_name not in self._stores:
-            profile = load_profile(profile_name, self.settings.profiles_dir)
-            self._stores[profile_name] = (KnowledgeStore(profile.collections, self.settings.storage_dir), profile)
-        store, profile = self._stores[profile_name]
-        return retrieve(store, self.embedder, question, profile.top_k)
+    def search_only(self, profile_name: str, question: str, history: tuple[Message, ...] = ()) -> list[Hit]:
+        return self.assistant(profile_name).search(question, list(history))
 
     def ask(self, profile: str, question: str, history: tuple[Message, ...], expected: str) -> dict:
         """Returns hits plus (unless retrieval-only) the answer, its scores from the judge, and timing."""
         out: dict = {}
-        if self.llm is None:
-            out["hits"] = self.search_only(profile, question)
+        if not self.answer:
+            out["hits"] = self.search_only(profile, question, history)
             return out
         try:
             answer = self.assistant(profile).ask(question, list(history))
         except LLMError as exc:
-            out["hits"] = self.search_only(profile, question)
             out["error"] = str(exc)
+            try:
+                out["hits"] = self.search_only(profile, question, history)
+            except LLMError:  # the rewrite failed too: search without it
+                out["hits"] = self.search_only(profile, question)
             return out
+        if answer.search_query != question:
+            out["search_query"] = answer.search_query
         out.update(hits=answer.sources, answer=answer.text, cited=answer.cited, model=answer.model,
                    latency_s=round(answer.latency_ms / 1000, 2))
         if self.use_judge:
@@ -320,10 +323,14 @@ def main(argv: list[str] | None = None) -> int:
     print("Loading the embedding model...", flush=True)
     embedder = Embedder(settings.embedding_model, settings.embedding_device)
     llm = None
-    if not args.retrieval_only:
+    try:
         llm = CachedLLM(get_llm(settings), delay_s=args.delay, use_cache=not args.no_cache)
         print(f"LLM: {llm.name} (cached replies: {len(llm._cache)})")
-    runner = Runner(embedder, llm, use_judge=not args.no_judge)
+    except LLMError as exc:
+        if not args.retrieval_only:
+            raise
+        print(f"No LLM ({exc}); follow-up questions are searched without rewriting.")
+    runner = Runner(embedder, llm, use_judge=not args.no_judge, answer=not args.retrieval_only)
     if args.profile == "leak" and any(getattr(c, "role", None) for c in cases):
         print("Note: role-based access arrives in Phase 4. Until then the internal assistant has no access to "
               "the restricted collection at all, so role tests check that nothing restricted gets through.")

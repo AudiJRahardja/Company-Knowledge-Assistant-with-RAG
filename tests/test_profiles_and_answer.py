@@ -42,3 +42,16 @@ def test_extract_citations(text, n, expected):
 def test_user_message_wraps_sources():
     msg = build_user_message("Hi?", [])
     assert msg.startswith("<sources>") and "Question: Hi?" in msg
+
+
+def test_merge_twins_keeps_best_copy_of_each_section():
+    from rag.retrieval import merge_twins
+    from rag.store import Hit
+
+    def hit(key, lang, twin):
+        return Hit(collection="public", score=0.5, chunk_key=key, doc_id="d", title="t", language=lang,
+                   version=1, status="current", last_updated="2026-01-01", source="s", text="x", twin_key=twin)
+
+    hits = [hit("d/id/#0", "id", "d/s0"), hit("d/en/#0", "en", "d/s0"), hit("d/en/#1", "en", "d/s1"),
+            hit("old", "en", "")]
+    assert [h.chunk_key for h in merge_twins(hits)] == ["d/id/#0", "d/en/#1", "old"]

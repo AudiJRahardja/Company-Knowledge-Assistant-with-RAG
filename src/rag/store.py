@@ -21,7 +21,7 @@ Writing is done by a separate `IndexWriter`, used only by the ingest script.
 
 import atexit
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable
 
@@ -30,6 +30,7 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from rag.chunking import Chunk
 from rag.documents import VISIBILITIES
+from rag.keyword import BM25
 
 COLLECTIONS = VISIBILITIES          # one collection per visibility level
 _QDRANT_COLLECTION = "chunks"       # name of the table inside each database folder
@@ -56,6 +57,8 @@ class Hit:
     last_updated: str
     source: str
     text: str
+    section: str = ""    # section heading the chunk comes from
+    twin_key: str = ""   # same for a chunk and its translation (see chunking.Chunk.twin_key)
 
 
 def _db_path(storage_dir: Path, collection: str) -> Path:
@@ -97,26 +100,59 @@ class KnowledgeStore:
                     f"collection {name!r} has no index yet. Run `python -m rag.ingest` first."
                 )
             self._clients[name] = client
+        self._keyword: dict[str, tuple[BM25, list[Hit]]] = {}  # built on first keyword search
+
+    def _check(self, collection: str) -> None:
+        if collection not in self._clients:
+            raise AccessDenied(f"this store has no access to the {collection!r} collection")
 
     @property
     def allowed(self) -> tuple[str, ...]:
         return tuple(self._clients)
 
     def search(self, collection: str, vector: list[float], limit: int) -> list[Hit]:
-        if collection not in self._clients:
-            raise AccessDenied(f"this store has no access to the {collection!r} collection")
+        """Vector (meaning) search."""
+        self._check(collection)
         result = self._clients[collection].query_points(
             collection_name=_QDRANT_COLLECTION, query=vector, limit=limit, with_payload=True
         )
         return [
-            Hit(collection=collection, score=p.score, **{k: p.payload[k] for k in _PAYLOAD_FIELDS})
+            Hit(collection=collection, score=p.score,
+                **{k: p.payload[k] for k in _PAYLOAD_FIELDS},
+                **{k: p.payload[k] for k in _OPTIONAL_FIELDS if k in p.payload})
             for p in result.points
+        ]
+
+    def keyword_search(self, collection: str, query: str, limit: int) -> list[Hit]:
+        """BM25 keyword search. The score is the BM25 score (not comparable with vector scores)."""
+        self._check(collection)
+        if collection not in self._keyword:
+            chunks = self._all_chunks(collection)
+            self._keyword[collection] = (BM25([f"{h.title}\n{h.text}" for h in chunks]), chunks)
+        index, chunks = self._keyword[collection]
+        return [replace(chunks[i], score=score) for i, score in index.top(query, limit)]
+
+    def _all_chunks(self, collection: str) -> list[Hit]:
+        points, offset = [], None
+        while True:
+            batch, offset = self._clients[collection].scroll(
+                _QDRANT_COLLECTION, limit=256, offset=offset, with_payload=True, with_vectors=False
+            )
+            points.extend(batch)
+            if offset is None:
+                break
+        return [
+            Hit(collection=collection, score=0.0,
+                **{k: p.payload[k] for k in _PAYLOAD_FIELDS},
+                **{k: p.payload[k] for k in _OPTIONAL_FIELDS if k in p.payload})
+            for p in points
         ]
 
 
 _PAYLOAD_FIELDS = (
     "chunk_key", "doc_id", "title", "language", "version", "status", "last_updated", "source", "text",
 )
+_OPTIONAL_FIELDS = ("section", "twin_key")  # added in Phase 3; older indexes simply lack them
 
 
 class IndexWriter:
@@ -160,6 +196,9 @@ class IndexWriter:
                     "visibility": c.doc.visibility,
                     "allowed_roles": list(c.doc.allowed_roles),
                     "chunk_index": c.index,
+                    "section": c.section,
+                    "section_index": c.section_index,
+                    "twin_key": c.twin_key,
                     "text": c.text,
                 },
             )

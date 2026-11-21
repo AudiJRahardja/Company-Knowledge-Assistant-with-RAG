@@ -10,20 +10,28 @@ single retrieval-augmented generation (RAG) engine:
 
 Both answer in English or Bahasa Indonesia, using only the company documents, with numbered citations.
 
-> Status: **Phase 1 (MVP)**. Evaluation, hybrid search, security hardening, tools and deployment are
-> coming in later phases. See [docs/PLAN.md](docs/PLAN.md).
+> Status: **Phase 3 (search quality) done.** Security hardening, tools and deployment come next.
+> See [docs/PLAN.md](docs/PLAN.md).
 
 ## How it works
 
 ```
-                 ┌──────────── ingest (offline) ────────────┐
-data/docs/*.md → validate → chunk → embed (BGE-M3) → storage/qdrant/public/
-                                                    → storage/qdrant/internal/
-                                                    → storage/qdrant/restricted/
+                 ┌──────────────── ingest (offline) ────────────────┐
+data/docs/*.md → validate → split at headings → embed (BGE-M3) → storage/qdrant/public/
+                                                               → storage/qdrant/internal/
+                                                               → storage/qdrant/restricted/
 
-question → profile (internal | external) → search ONLY the profile's databases
-         → top 5 chunks as numbered sources → LLM (Gemini or Ollama) → answer with [1] [2] citations
+question → profile (internal | external): only the profile's databases can be opened
+  → follow-up? rewrite it into a standalone question (LLM)
+  → two questions in one? also search each part on its own
+  → meaning search (vectors) + keyword search (BM25), combined by rank fusion
+  → keep one copy of each section (EN or ID, not both)
+  → reranker (bge-reranker-v2-m3) picks the best 5 of ~20 candidates
+  → numbered sources → LLM (Gemini or Ollama) → answer with [1] [2] citations
 ```
+
+Each search step can be switched off in `.env` (`RETRIEVAL_HYBRID`, `RETRIEVAL_MERGE_TWINS`,
+`RERANKER_MODEL=none`, `QUERY_REWRITE`, `RETRIEVAL_SPLIT_QUESTIONS`), which is how the eval measures what each one adds.
 
 **Key security idea:** public and internal documents live in physically separate databases. The external
 assistant can only open the public one. This is enforced in the storage layer (`src/rag/store.py`) and the
@@ -55,7 +63,8 @@ copy .env.example .env      # then add your GEMINI_API_KEY
 ```
 
 ```bash
-python -m rag.ingest                  # build the indexes (first run downloads BGE-M3, ~2.2 GB)
+python -m rag.ingest                  # build the indexes (first run downloads BGE-M3, ~2.2 GB;
+                                      # the reranker, ~2.2 GB more, downloads on first search)
 python -m rag.llm                     # check the LLM connection
 streamlit run app/streamlit_app.py    # open the chat UI
 pytest                                # run the tests
@@ -106,31 +115,50 @@ so an interrupted run picks up where it stopped.
 
 ### Results history
 
-Baseline (Phase 1 engine: plain vector search, fixed 220-word chunks, top 5). Answers by
-gemini-3.5-flash-lite, with gemini-3.1-flash-lite as backup.
+Answers by gemini-3.5-flash-lite (gemini-3.1-flash-lite as backup). Every row in `eval/results.csv`.
 
-| Metric | Internal | External |
-|---|---|---|
-| Right document in top 5 (hit@5) | 97% | 100% |
-| All expected documents in top 5 | 97% | 87% |
-| MRR | 0.93 | 0.93 |
-| Different documents in top 5 | 2.6 | 2.5 |
-| Key facts in the answer | 97% | 100% |
-| Correct (judge) | 97% | 100% |
-| Faithful to sources (judge) | 100% | 99% |
-| Answers with citations | 100% | 100% |
-| Says "I don't know" when it should | 100% | 100% |
-| Refuses when it shouldn't | 0% | 0% |
-| Used an outdated policy | 1% | 0% |
+**Search, step by step** (each change measured on its own, both test sets):
 
-Leak tests: **0% leak rate** (30 attacks; 2 order-lookup tests wait for Phase 5).
+| Step | Internal: all needed docs found | Internal MRR | External: all needed docs found | External MRR |
+|---|---|---|---|---|
+| Baseline: vector search, fixed 220-word chunks | 97% | 0.93 | 87% | 0.93 |
+| A. One chunk per section (split at headings) | 95% | 0.97 | 95% | 1.00 |
+| B. Keep one language copy of each section | 97% | 0.97 | 97% | 1.00 |
+| C. Add keyword search (BM25), fuse rankings | 95% | 0.95 | 97% | 0.96 |
+| D. Add a reranker | 95% | 0.97 | 98% | 0.98 |
+| E. Rewrite follow-up questions before searching | 98% | 1.00 | 98% | 0.98 |
+| F. Search each part of a two-part question | **100%** | **1.00** | **100%** | **0.98** |
 
-Weak spots found:
-- Follow-up questions find the right document only 67% of the time (internal). Search only sees the
-  latest message, so "And how many of those can I carry over?" has no topic.
-- Multi-document questions find all the documents they need only 33% of the time (external).
-- Only about 2.5 of the 5 search results are different documents, because English and Indonesian copies
-  of the same text both take a slot.
+MRR = 1 / position of the first right document, averaged (1.00 = always ranked first).
+
+Notes:
+- Keyword search on its own made the order slightly worse (C), but it found extra candidates that the
+  reranker then put in the right order (D). With the reranker, turning keyword search off changed the
+  results by about one question, so it stays on: real users type exact codes and order numbers that the
+  test set barely covers.
+- Follow-up questions went from 67% to 100% with rewriting (E).
+- Two-part questions ("how much leave do I get, and how do I add the baby to my insurance?") lost one half
+  of the answer after reranking, because each section answers only half the question. Combining the
+  reranker's and the first search's rankings didn't help; searching each part separately did (F).
+
+**Answers, baseline vs Phase 3:**
+
+| Metric | Internal before | Internal after | External before | External after |
+|---|---|---|---|---|
+| Key facts in the answer | 97% | **100%** | 100% | 100% |
+| Correct (judge) | 97% | **98%** | 100% | 99% |
+| Faithful to sources (judge) | 100% | 98% | 99% | 99% |
+| Answers with citations | 100% | 100% | 100% | 100% |
+| Says "I don't know" when it should | 100% | 100% | 100% | 100% |
+| Refuses when it shouldn't | 0% | 0% | 0% | 0% |
+| Used an outdated policy | 1% | 3% | 0% | 0% |
+
+Leak tests: **0% leak rate** before and after (30 attacks; 2 order-lookup tests wait for Phase 5). The
+assistant refused 100% of attacks after Phase 3, up from 93%.
+
+Known issue for Phase 4: the reranker only judges how well text matches the question, not which policy
+version is current, so the old 2024 remote-work policy can outrank the 2026 one. The answers still give
+the current rules, but sometimes mention or cite the old one. Version handling is planned for Phase 4.
 
 ## Project layout
 

@@ -25,6 +25,11 @@ class Settings:
     gemini_timeout_s: int
     ollama_url: str
     ollama_model: str
+    retrieval_hybrid: bool
+    retrieval_merge_twins: bool
+    reranker_model: str  # empty = no reranker
+    query_rewrite: bool
+    split_questions: bool
 
 
 def get_settings() -> Settings:
@@ -47,4 +52,17 @@ def get_settings() -> Settings:
         gemini_timeout_s=int(os.getenv("GEMINI_TIMEOUT_S", "30")),
         ollama_url=os.getenv("OLLAMA_URL", "http://localhost:11434"),
         ollama_model=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
+        retrieval_hybrid=_flag("RETRIEVAL_HYBRID", True),
+        retrieval_merge_twins=_flag("RETRIEVAL_MERGE_TWINS", True),
+        reranker_model=os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3").strip(),
+        query_rewrite=_flag("QUERY_REWRITE", True),
+        split_questions=_flag("RETRIEVAL_SPLIT_QUESTIONS", True),
     )
+
+
+def _flag(name: str, default: bool) -> bool:
+    """Read an on/off setting: 1/0, true/false, on/off, yes/no."""
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() in ("1", "true", "on", "yes")

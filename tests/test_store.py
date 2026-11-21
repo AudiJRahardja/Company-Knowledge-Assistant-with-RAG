@@ -60,3 +60,10 @@ def test_writer_refuses_chunk_with_wrong_visibility(tmp_path):
     with pytest.raises(ValueError, match="refusing"):
         writer.rebuild("public", [chunk("internal", "secret")], [[1.0, 0, 0, 0]], DIM)
     close_all()
+
+
+def test_keyword_search_has_the_same_access_rules(storage):
+    store = KnowledgeStore(["public"], storage)
+    assert [h.collection for h in store.keyword_search("public", "public text", limit=5)] == ["public"]
+    with pytest.raises(AccessDenied):
+        store.keyword_search("internal", "internal text", limit=5)

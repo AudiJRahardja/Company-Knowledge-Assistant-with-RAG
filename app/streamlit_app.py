@@ -1,4 +1,4 @@
-"""Phase 1 demo UI: one page, a switch between the two assistants.
+"""Demo UI: one page, a switch between the two assistants.
 
 Run:  streamlit run app/streamlit_app.py
 """
@@ -56,13 +56,20 @@ def render_sources(answer_sources: list[dict], cited: list[int]) -> None:
             st.caption(s["text"][:400] + ("..." if len(s["text"]) > 400 else ""))
 
 
-def to_message_dict(answer: Answer) -> dict:
+def render_footer(msg: dict) -> None:
+    if msg.get("search_query"):
+        st.caption(f"Searched for: {msg['search_query']}")
+    st.caption(f"{msg['latency_ms'] / 1000:.1f}s · {msg['model']}")
+
+
+def to_message_dict(answer: Answer, question: str) -> dict:
     return {
         "role": "assistant",
         "content": answer.text,
         "cited": answer.cited,
         "latency_ms": answer.latency_ms,
         "model": answer.model,
+        "search_query": answer.search_query if answer.search_query != question else "",
         "sources": [
             {"title": h.title, "collection": h.collection, "language": h.language,
              "last_updated": h.last_updated, "score": h.score, "source": h.source, "text": h.text}
@@ -105,7 +112,7 @@ for msg in history:
         st.markdown(msg["content"])
         if msg["role"] == "assistant":
             render_sources(msg["sources"], msg["cited"])
-            st.caption(f"{msg['latency_ms'] / 1000:.1f}s · {msg['model']}")
+            render_footer(msg)
 
 if not history:
     st.write("Try asking:")
@@ -126,9 +133,9 @@ if question := st.chat_input("Ask a question in English or Bahasa Indonesia"):
                 st.error(str(exc))
                 st.stop()
         st.markdown(answer.text)
-        msg = to_message_dict(answer)
+        msg = to_message_dict(answer, question)
         render_sources(msg["sources"], msg["cited"])
-        st.caption(f"{answer.latency_ms / 1000:.1f}s · {answer.model}")
+        render_footer(msg)
 
     history.append({"role": "user", "content": question})
     history.append(msg)
