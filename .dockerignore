@@ -1,10 +1,8 @@
-.git
-.venv
-.env
-.claude
-CLAUDE.md
+# Hidden files and folders (.git, .venv, .env, caches, editor settings)
+.*
+# Notes in the project root (the documents in data/ are still copied)
+*.md
 storage
 eval/runs
 **/__pycache__
-.pytest_cache
 *.pyc
