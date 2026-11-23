@@ -25,6 +25,9 @@ from dataclasses import dataclass
 
 from rag.documents import Document
 
+# Part of the index manifest: change it when the chunking or the embedded text changes, so the next ingest
+# rebuilds everything instead of mixing old and new chunks.
+CHUNKING_VERSION = "sections-v1"
 CHUNK_WORDS = 220      # sections longer than this are split into windows
 OVERLAP_WORDS = 40     # words repeated between neighbouring windows so a sentence is not cut off from context
 

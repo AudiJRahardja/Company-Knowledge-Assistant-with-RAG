@@ -10,10 +10,71 @@ single retrieval-augmented generation (RAG) engine:
 
 Both answer in English or Bahasa Indonesia, using only the company documents, with numbered citations.
 
-> Status: **Phase 5 (tools) done.** Polish (feedback, analytics, chat widget, Docker) comes next.
-> See [docs/PLAN.md](docs/PLAN.md).
+> Status: **all six phases done** (MVP, evaluation, search quality, security, tools, polish).
+> See [docs/PLAN.md](docs/PLAN.md) for the plan.
+
+> Demo GIF: _to be recorded_ (`docs/demo.gif`: the shop widget answering an order question, then the internal page).
+
+## Results at a glance
+
+Measured on 206 test questions (every one in English and Indonesian), from the first working version to now:
+
+| | First version | Now |
+|---|---|---|
+| Right documents found (questions needing 2+ docs, customer bot) | 33% | **100%** |
+| Follow-up questions ("and for managers?") found the right document | 67% | **100%** |
+| Key facts in the answer (internal / external) | 97% / 100% | **100% / 100%** |
+| Answers using an outdated policy | 1–3% | **0%** |
+| Tool questions (leave balance, order status, store hours, ...) handled correctly | – | **100%** |
+| Leak rate: internal or HR-only data reaching a user who may not see it | 0% | **0%** (38 attacks) |
+
+Details and what each change added: [Results history](#results-history).
 
 ## How it works
+
+```mermaid
+flowchart LR
+  subgraph clients[Clients]
+    W[Shop website<br/>chat widget]
+    I[Internal chat page<br/>sign-in]
+    S[Streamlit demo<br/>+ analytics]
+  end
+  subgraph api[FastAPI]
+    EXT["/chat/external<br/>anonymous"]
+    INT["/chat/internal<br/>JWT + role"]
+    FB["/feedback"]
+  end
+  subgraph engine[Shared engine]
+    G[Input checks<br/>injection, length]
+    R[Search<br/>vectors + BM25 + reranker]
+    L[LLM<br/>Gemini or Ollama]
+    T[Tools<br/>leave, orders, store hours, hand-offs]
+    O[Output check<br/>prompt + leak fingerprints]
+  end
+  subgraph data[Data]
+    P[(public)]
+    N[(internal)]
+    X[(restricted)]
+    DB[(mock HR +<br/>orders DB)]
+    LOG[(chat log +<br/>feedback)]
+  end
+  W --> EXT
+  I --> INT
+  EXT --> G
+  INT --> G
+  S --> G
+  G --> R --> L --> O
+  L <--> T
+  T --> DB
+  R --> P
+  R -. internal bot only .-> N
+  R -. managers / HR only .-> X
+  O --> LOG
+  FB --> LOG
+  S --> LOG
+```
+
+Step by step:
 
 ```
                  ┌──────────────── ingest (offline) ────────────────┐
@@ -33,6 +94,7 @@ question → assistant (internal | external) + role (employee | manager | hr | a
     (or the LLM asks for a tool → our code runs it → its result becomes one more source → answer)
   → output check: no system prompt, no internal contacts / figures / names  → withheld
   → no citations? → "I don't know" + who to contact, in the user's language
+  → saved in the chat log (emails and phone numbers blanked) → thumbs up / down → analytics
 ```
 
 Each search step can be switched off in `.env` (`RETRIEVAL_HYBRID`, `RETRIEVAL_MERGE_TWINS`,
@@ -91,6 +153,34 @@ The security rules are in the code (`src/rag/tools.py`), not in the prompt:
   tool that needs a signed-in employee.
 - Every argument is checked (type, length, allowed values) before it reaches the database.
 
+## Web pages, feedback and analytics
+
+The API also serves three pages (`web/`):
+
+| Page | What it is |
+|---|---|
+| `/` (`web/shop-demo.html`) | a demo shop page with the customer chat widget in the corner |
+| `/web/internal.html` | the employee chat page, with sign-in |
+| `/web/chat.js` | the widget itself. Any website adds it with one line: `<script src="https://<server>/web/chat.js" data-widget></script>` (list the site in `WIDGET_ORIGINS`) |
+
+Both chats show clickable citations: click **[2]** and the source section opens below the answer. Every
+answer has thumbs up / down. Two safety details: the widget draws answers as plain text, never as HTML (so an
+answer can't inject a script into the shop page, and a test checks the script for it), and it runs inside
+its own Shadow DOM, so the shop's CSS and the widget can't break each other.
+
+Every answer is saved in `storage/logs/chats.sqlite` with a random id that the thumbs buttons send back
+(`POST /feedback`). The **Analytics** page in the Streamlit app (or `python -m rag.chatlog --profile
+external`) shows per assistant:
+- top questions, and questions it could not answer (internal: gaps in the HR / IT docs; external: things
+  the website or FAQ should explain);
+- hand-off rate (no answer, or a ticket / support hand-off / sales lead);
+- thumbs up rate, and the answers people disliked;
+- most cited documents, tool use, languages, roles.
+
+Privacy: emails and phone numbers are blanked before anything is saved (the company's own hotline stays), and
+the internal log keeps the role, not the username, so the numbers are about the documents, not about who
+asked what.
+
 ## Knowledge base
 
 56 Markdown files: 28 topics, each in English (`en/`) and Indonesian (`id/`).
@@ -120,13 +210,35 @@ copy .env.example .env      # then add your GEMINI_API_KEY
 python -m rag.ingest                  # build the indexes (first run downloads BGE-M3, ~2.2 GB;
                                       # the reranker, ~2.2 GB more, downloads on first search)
 python -m rag.llm                     # check the LLM connection
-streamlit run app/streamlit_app.py    # open the chat UI
-uvicorn api.main:app --port 8000      # or run the API; try it at http://localhost:8000/docs
+streamlit run app/streamlit_app.py    # chat UI with an assistant switch, plus the Analytics page
+uvicorn api.main:app --port 8000      # or the API + web pages: http://localhost:8000 (shop + widget),
+                                      # /web/internal.html (employees), /docs (try the endpoints)
 pytest                                # run the tests
 ```
 
+Re-indexing after editing documents: `python -m rag.ingest` only re-embeds files that changed (it keeps a
+hash of every file in `storage/qdrant/manifest.json`), so a one-file edit takes seconds instead of a minute.
+Deleted files are removed from the index. `--full` rebuilds everything; that also happens automatically
+when the embedding model or the chunking method changes.
+
 Stop the Streamlit app and the API before re-running `rag.ingest`: Qdrant's local mode locks its database
 folders, so only one program can open them at a time.
+
+### Docker
+
+```bash
+copy .env.example .env                       # add GEMINI_API_KEY and a JWT_SECRET
+docker compose up --build                    # -> http://localhost:8000
+```
+
+The container builds the index and the mock database on first start (and downloads the models into a
+volume, so only once), then starts the API with the web pages. The image uses CPU PyTorch so it runs
+anywhere; with an NVIDIA GPU use `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build`.
+
+A stricter deployment for the customer bot: `docker compose --profile split up --build customer` starts a
+server on port 8001 with `ASSISTANTS=external` (no login, no internal chat) whose index is built from the
+public documents only, so internal data is not just filtered out, it isn't in that server's database. (The
+image still contains the document files; a real deployment would build a separate image without them.)
 
 Demo accounts for the internal assistant (password `demo1234` for all, see `data/mock/users.yaml`):
 
@@ -147,8 +259,9 @@ curl -X POST localhost:8000/chat/external -H "Content-Type: application/json" \
      -d '{"question": "Bisakah saya mengembalikan blender yang sudah dibuka?"}'
 ```
 
-Each answer comes back with a `status` (`answered`, `not_found`, `blocked_input`, `blocked_output`), the
-`handoff` contact when it could not answer, and the numbered sources.
+Each answer comes back with an `answer_id` (for `POST /feedback`), a `status` (`answered`, `not_found`,
+`needs_info`, `blocked_input`, `blocked_output`), the `handoff` contact when it could not answer, the tools
+used, and the numbered sources with their text.
 
 ### Using a local model instead of Gemini
 Install [Ollama](https://ollama.com), run `ollama pull qwen2.5:7b`, and set `LLM_PROVIDER=ollama` in `.env`.
@@ -162,9 +275,9 @@ in both English and Indonesian:
 
 | File | Questions | What it checks |
 |---|---|---|
-| `eval/internal.jsonl` | 80 | employee questions: lookups, multi-document, follow-ups, outdated policy, asking about the old policy on purpose, confusable topics, unanswerable, and manager/HR-only questions asked by the right role |
-| `eval/external.jsonl` | 72 | customer questions, same categories, plus off-topic requests |
-| `eval/leak_tests.jsonl` | 34 | attempts to get internal or HR-only information, prompt injection, role escalation (including a manager asking for salary bands) |
+| `eval/internal.jsonl` | 86 | employee questions: lookups, multi-document, follow-ups, outdated policy, asking about the old policy on purpose, confusable topics, unanswerable, manager/HR-only questions asked by the right role, and tool questions (leave balance, manager, tickets) |
+| `eval/external.jsonl` | 82 | customer questions, same categories, plus off-topic requests and tool questions (orders, store hours, hand-offs) |
+| `eval/leak_tests.jsonl` | 38 | attempts to get internal or HR-only information, prompt injection, role escalation (including a manager asking for salary bands), order lookups with the wrong email, and asking for a colleague's data |
 
 Each question lists the document(s) that should be found and the key facts the answer must contain.
 
@@ -289,10 +402,13 @@ What happened along the way:
 data/docs/{public,internal,restricted}/{en,id}/   knowledge base
 profiles/{internal,external}.yaml                 assistant settings (collections, prompt, fallback)
 src/rag/                                          the shared engine
-app/streamlit_app.py                              demo UI with an assistant switch and demo users
-api/main.py                                       HTTP API: login, /chat/internal, /chat/external
+app/streamlit_app.py, app/pages/1_Analytics.py   demo UI with an assistant switch and demo users; analytics
+api/main.py                                       HTTP API: login, chats, feedback, serves web/
+web/                                              chat widget (chat.js), internal chat page, demo shop page
 data/mock/users.yaml                              demo accounts (hashed passwords, roles)
 src/rag/tools.py, src/rag/mockdb.py               tools and the mock company database they use
+src/rag/chatlog.py                                chat log, feedback and analytics (SQLite)
 eval/                                             test sets, scoring, and results history
 tests/                                            unit and security tests
+Dockerfile, docker-compose*.yml, docker/          container setup
 ```

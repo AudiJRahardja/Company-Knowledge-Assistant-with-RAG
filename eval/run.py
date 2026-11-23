@@ -119,7 +119,7 @@ class Runner:
         if key not in self._assistants:
             a = build_assistant(profile, embedder=self.embedder, llm=self.llm, settings=self.settings,
                                 search_only=self.llm is None, role=role, toolbox=self.toolbox)
-            a.log_path = None  # keep eval traffic out of the real chat log
+            a.chat_log = None  # keep eval traffic out of the real chat log
             self._assistants[key] = a
         return self._assistants[key]
 

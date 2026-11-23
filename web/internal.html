@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Brightnest Employee Helper</title>
+  <style>
+    :root { --brand: #2f6b4f; --ink: #1f2a24; --muted: #5d6b63; --line: #dfe6e1; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--ink);
+           background: #f3f6f4; display: flex; flex-direction: column; }
+    header { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px;
+             background: #fff; border-bottom: 1px solid var(--line); }
+    header b { color: var(--brand); }
+    header span { font-size: 14px; color: var(--muted); }
+    header button { margin-left: 12px; border: 1px solid var(--line); background: #fff; border-radius: 8px;
+                    padding: 5px 10px; cursor: pointer; font: inherit; font-size: 13px; }
+    main { flex: 1; display: flex; justify-content: center; padding: 20px; min-height: 0; }
+    #chat { width: 100%; max-width: 820px; height: 100%; }
+    form.login { margin: auto; background: #fff; border: 1px solid var(--line); border-radius: 14px;
+                 padding: 28px; width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 12px; }
+    form.login h1 { margin: 0 0 4px; font-size: 20px; }
+    label { font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+    input { font: inherit; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; }
+    input:focus { outline: 2px solid var(--brand); border-color: transparent; }
+    form.login button { background: var(--brand); color: #fff; border: 0; border-radius: 8px; padding: 10px;
+                        font: inherit; font-weight: 600; cursor: pointer; }
+    .error { color: #9b2c2c; font-size: 13px; min-height: 1em; margin: 0; }
+    .hint { font-size: 12px; color: var(--muted); margin: 0; }
+    [hidden] { display: none !important; }
+    @media (max-width: 600px) { main { padding: 8px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <b>Brightnest Employee Helper</b>
+    <div><span id="who"></span><button id="signout" type="button" hidden>Sign out</button></div>
+  </header>
+  <main>
+    <form class="login" id="login">
+      <h1>Sign in</h1>
+      <label>Username <input id="username" autocomplete="username" required></label>
+      <label>Password <input id="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit">Sign in</button>
+      <p class="error" id="error"></p>
+      <p class="hint">Demo users: rizky (employee), maya (manager), sari (HR). Password: demo1234.</p>
+    </form>
+    <div id="chat" hidden></div>
+  </main>
+
+  <script src="/web/chat.js"></script>
+  <script>
+    // The token is kept in memory only (not localStorage): closing or reloading the tab signs you out.
+    var token = null;
+    var form = document.getElementById("login");
+    var chat = document.getElementById("chat");
+    var who = document.getElementById("who");
+    var signout = document.getElementById("signout");
+    var error = document.getElementById("error");
+
+    function signedOut() {
+      token = null;
+      chat.hidden = true; form.hidden = false; signout.hidden = true; who.textContent = "";
+    }
+
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      error.textContent = "";
+      fetch("/auth/login", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: document.getElementById("username").value,
+                               password: document.getElementById("password").value })
+      }).then(function (res) {
+        return res.json().then(function (data) {
+          if (!res.ok) { error.textContent = data.detail || "Sign-in failed."; return; }
+          token = data.access_token;
+          document.getElementById("password").value = "";
+          who.textContent = data.name + " (" + data.role + ")";
+          form.hidden = true; chat.hidden = false; signout.hidden = false;
+          BrightnestChat.mount(chat, { assistant: "internal", getToken: function () { return token; },
+                                       onSignedOut: signedOut }).focus();
+        });
+      }).catch(function () { error.textContent = "The server could not be reached."; });
+    });
+    signout.addEventListener("click", signedOut);
+  </script>
+</body>
+</html>

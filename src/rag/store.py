@@ -10,8 +10,8 @@ Each visibility level gets its OWN Qdrant database folder:
 
 This is stronger than putting everything in one database with a "visibility" field and filtering at search
 time: a filter is one line of code that can be forgotten or bypassed by a bug, but a database that was never
-opened cannot return anything. When we deploy (Phase 6), the external assistant's container will only get the
-public folder mounted, so internal data is physically not there.
+opened cannot return anything. A customer-only server (ASSISTANTS=external, see README) can go further: its
+index is built with `python -m rag.ingest --collections public`, so internal data is physically not there.
 
 Inside one Python process (e.g. the Streamlit demo that hosts both assistants), the boundary is the
 `KnowledgeStore` class: it is created with a fixed list of allowed collections, only opens those folders,
@@ -26,7 +26,8 @@ from pathlib import Path
 from typing import Iterable
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
+from qdrant_client.models import (Distance, FieldCondition, Filter, MatchAny, MatchValue, PointStruct,
+                                  VectorParams)
 
 from rag.chunking import Chunk
 from rag.documents import VISIBILITIES
@@ -179,47 +180,64 @@ class IndexWriter:
     def __init__(self, storage_dir: Path):
         self.storage_dir = storage_dir
 
+    def exists(self, collection: str) -> bool:
+        return _client_for(self.storage_dir, collection).collection_exists(_QDRANT_COLLECTION)
+
     def rebuild(self, collection: str, chunks: list[Chunk], vectors: list[list[float]], dim: int) -> None:
         """Delete the collection and fill it again from scratch."""
-        if len(chunks) != len(vectors):
-            raise ValueError("chunks and vectors must have the same length")
-        for chunk in chunks:
-            # Last line of defence: a chunk can only be written to the collection matching its label.
-            if chunk.doc.visibility != collection:
-                raise ValueError(
-                    f"refusing to write {chunk.doc.visibility} chunk {chunk.chunk_key} into {collection!r}"
-                )
-
+        _check_chunks(collection, chunks, vectors)
         client = _client_for(self.storage_dir, collection)
         if client.collection_exists(_QDRANT_COLLECTION):
             client.delete_collection(_QDRANT_COLLECTION)
         client.create_collection(
             _QDRANT_COLLECTION, vectors_config=VectorParams(size=dim, distance=Distance.COSINE)
         )
+        self.add(collection, chunks, vectors)
+
+    def add(self, collection: str, chunks: list[Chunk], vectors: list[list[float]]) -> None:
+        """Add (or overwrite) chunks in an existing collection."""
+        _check_chunks(collection, chunks, vectors)
         if not chunks:
             return
-        points = [
-            PointStruct(
-                id=str(uuid.uuid5(uuid.NAMESPACE_URL, c.chunk_key)),
-                vector=v,
-                payload={
-                    "chunk_key": c.chunk_key,
-                    "doc_id": c.doc.doc_id,
-                    "title": c.doc.title,
-                    "language": c.doc.language,
-                    "version": c.doc.version,
-                    "status": c.doc.status,
-                    "last_updated": c.doc.last_updated,
-                    "source": c.doc.source,
-                    "visibility": c.doc.visibility,
-                    "allowed_roles": list(c.doc.allowed_roles),
-                    "chunk_index": c.index,
-                    "section": c.section,
-                    "section_index": c.section_index,
-                    "twin_key": c.twin_key,
-                    "text": c.text,
-                },
-            )
-            for c, v in zip(chunks, vectors)
-        ]
-        client.upsert(_QDRANT_COLLECTION, points=points)
+        points = [PointStruct(id=str(uuid.uuid5(uuid.NAMESPACE_URL, c.chunk_key)), vector=v, payload=_payload(c))
+                  for c, v in zip(chunks, vectors)]
+        _client_for(self.storage_dir, collection).upsert(_QDRANT_COLLECTION, points=points)
+
+    def delete_sources(self, collection: str, sources: Iterable[str]) -> None:
+        """Remove every chunk of these document files (used when a file changed or was deleted)."""
+        sources = list(sources)
+        if not sources:
+            return
+        _client_for(self.storage_dir, collection).delete(
+            _QDRANT_COLLECTION,
+            points_selector=Filter(must=[FieldCondition(key="source", match=MatchAny(any=sources))]),
+        )
+
+
+def _check_chunks(collection: str, chunks: list[Chunk], vectors: list[list[float]]) -> None:
+    if len(chunks) != len(vectors):
+        raise ValueError("chunks and vectors must have the same length")
+    for chunk in chunks:
+        # Last line of defence: a chunk can only be written to the collection matching its label.
+        if chunk.doc.visibility != collection:
+            raise ValueError(f"refusing to write {chunk.doc.visibility} chunk {chunk.chunk_key} into {collection!r}")
+
+
+def _payload(c: Chunk) -> dict:
+    return {
+        "chunk_key": c.chunk_key,
+        "doc_id": c.doc.doc_id,
+        "title": c.doc.title,
+        "language": c.doc.language,
+        "version": c.doc.version,
+        "status": c.doc.status,
+        "last_updated": c.doc.last_updated,
+        "source": c.doc.source,
+        "visibility": c.doc.visibility,
+        "allowed_roles": list(c.doc.allowed_roles),
+        "chunk_index": c.index,
+        "section": c.section,
+        "section_index": c.section_index,
+        "twin_key": c.twin_key,
+        "text": c.text,
+    }

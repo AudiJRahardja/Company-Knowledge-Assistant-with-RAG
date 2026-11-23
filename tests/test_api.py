@@ -1,11 +1,14 @@
 """API tests with a fake assistant pool (no models, no LLM)."""
 
+from dataclasses import replace
+
 import jwt
 import pytest
 from fastapi.testclient import TestClient
 
 from api.main import create_app
 from rag.auth import UserDirectory, hash_password
+from rag.chatlog import ChatLog, new_answer_id
 from rag.config import get_settings
 from rag.guard import InputRejected, check_question
 from rag.llm import LLMError
@@ -15,10 +18,13 @@ PASSWORD = "demo1234"
 
 
 class FakePool:
-    def __init__(self):
+    """Answers without models; logs the answer like the real pipeline does, so feedback can find it."""
+
+    def __init__(self, log: ChatLog | None = None):
         self.calls = []
         self.contexts = []
         self.fail_with = None
+        self.log = log
 
     def ask(self, profile, role, question, history, context):
         self.calls.append((profile, role, question, len(history)))
@@ -26,19 +32,30 @@ class FakePool:
         if self.fail_with:
             raise self.fail_with
         check_question(question, 1000)
-        return Answer(text=f"answer for {role}", sources=[], cited=[], latency_ms=5, profile=profile, model="fake")
+        answer = Answer(text=f"answer for {role}", sources=[], cited=[], latency_ms=5, profile=profile,
+                        model="fake", id=new_answer_id())
+        if self.log:
+            self.log.record(answer.id, question, answer)
+        return answer
+
+
+USERS = {
+    "rizky": {"name": "Rizky", "role": "employee", "password_hash": hash_password(PASSWORD)},
+    "sari": {"name": "Sari", "role": "hr", "password_hash": hash_password(PASSWORD)},
+}
+
+
+def make_client(tmp_path, pool=None, **settings_changes):
+    settings = replace(get_settings(), **settings_changes)
+    log = ChatLog(tmp_path / "chats.sqlite")
+    app = create_app(settings=settings, pool=pool or FakePool(log), users=UserDirectory(USERS), chat_log=log)
+    return TestClient(app)
 
 
 @pytest.fixture
-def setup():
-    users = UserDirectory({
-        "rizky": {"name": "Rizky", "role": "employee", "password_hash": hash_password(PASSWORD)},
-        "sari": {"name": "Sari", "role": "hr", "password_hash": hash_password(PASSWORD)},
-    })
-    settings = get_settings()
-    pool = FakePool()
-    client = TestClient(create_app(settings=settings, pool=pool, users=users))
-    return client, pool
+def setup(tmp_path):
+    pool = FakePool(ChatLog(tmp_path / "chats.sqlite"))
+    return make_client(tmp_path, pool), pool
 
 
 def login(client, username="rizky", password=PASSWORD):
@@ -124,3 +141,61 @@ def test_tools_get_the_user_from_the_token_not_the_message(setup):
     assert pool.contexts[-1].username == "rizky"
     client.post("/chat/external", json={"question": "Where is my order?"})
     assert pool.contexts[-1].username is None
+
+
+# ---------------------------------------------------------------- Phase 6
+
+def test_feedback_for_an_answer(setup):
+    client, _ = setup
+    answer_id = client.post("/chat/external", json={"question": "Store hours?"}).json()["answer_id"]
+    assert len(answer_id) == 32
+    assert client.post("/feedback", json={"answer_id": answer_id, "rating": 1}).status_code == 200
+    assert client.post("/feedback", json={"answer_id": answer_id, "rating": -1, "comment": "wrong"}).status_code == 200
+    assert client.post("/feedback", json={"answer_id": "0" * 32, "rating": 1}).status_code == 404
+    assert client.post("/feedback", json={"answer_id": answer_id, "rating": 5}).status_code == 422
+
+
+def test_external_only_server_has_no_login_or_internal_chat(tmp_path):
+    client = make_client(tmp_path, assistants=("external",))
+    assert client.post("/auth/login", json={"username": "rizky", "password": PASSWORD}).status_code == 404
+    assert client.post("/chat/internal", json={"question": "hi"}).status_code == 404
+    assert client.post("/chat/external", json={"question": "hi"}).status_code == 200
+    assert client.get("/health").json()["assistants"] == ["external"]
+
+
+def test_visitor_ip_from_proxy_header_only_when_trusted(tmp_path):
+    pool = FakePool()
+    client = make_client(tmp_path, pool, trust_proxy=True)
+    client.post("/chat/external", json={"question": "hi"}, headers={"X-Forwarded-For": "1.2.3.4, 10.0.0.7"})
+    assert pool.contexts[-1].client_id == "10.0.0.7"  # the right-most entry, added by our own proxy
+
+    pool = FakePool()
+    client = make_client(tmp_path, pool, trust_proxy=False)
+    client.post("/chat/external", json={"question": "hi"}, headers={"X-Forwarded-For": "1.2.3.4"})
+    assert pool.contexts[-1].client_id == "testclient"  # a made-up header is ignored
+
+
+def test_web_pages_are_served(setup):
+    client, _ = setup
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code in (302, 307) and r.headers["location"] == "/web/shop-demo.html"
+    assert client.get("/web/chat.js").status_code == 200
+    assert client.get("/web/internal.html").status_code == 200
+
+
+def test_widget_origins_allow_cross_site_calls_only_for_listed_sites(tmp_path):
+    client = make_client(tmp_path, widget_origins=("https://shop.example.com",))
+    preflight = {"Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type"}
+    ok = client.options("/chat/external", headers={"Origin": "https://shop.example.com", **preflight})
+    assert ok.headers.get("access-control-allow-origin") == "https://shop.example.com"
+    bad = client.options("/chat/external", headers={"Origin": "https://evil.example.com", **preflight})
+    assert "access-control-allow-origin" not in bad.headers
+
+
+def test_chat_script_never_puts_server_text_into_html():
+    """The page builds every element itself and sets text with textContent, so an answer can never become
+    HTML or a script."""
+    script = (get_settings().web_dir / "chat.js").read_text(encoding="utf-8")
+    code = "\n".join(line for line in script.splitlines() if not line.strip().startswith(("*", "/*", "//")))
+    for risky in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"):
+        assert risky not in code, risky

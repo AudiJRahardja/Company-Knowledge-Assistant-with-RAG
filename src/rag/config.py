@@ -15,7 +15,7 @@ class Settings:
     docs_dir: Path
     storage_dir: Path
     profiles_dir: Path
-    log_path: Path
+    chat_db_path: Path        # chat log + feedback (SQLite)
     embedding_model: str
     embedding_device: str
     llm_provider: str
@@ -42,6 +42,11 @@ class Settings:
     # Phase 5: tools
     mock_db_path: Path
     order_lookup_limit: int    # failed order verifications allowed per visitor per 10 minutes
+    # Phase 6: deployment
+    assistants: tuple[str, ...]    # which assistants this server offers (an external-only server is possible)
+    widget_origins: tuple[str, ...]  # websites allowed to embed the customer chat widget (CORS)
+    trust_proxy: bool              # behind a reverse proxy: read the visitor IP from X-Forwarded-For
+    web_dir: Path
 
 
 def get_settings() -> Settings:
@@ -50,7 +55,7 @@ def get_settings() -> Settings:
         docs_dir=PROJECT_ROOT / "data" / "docs",
         storage_dir=storage_dir,
         profiles_dir=PROJECT_ROOT / "profiles",
-        log_path=storage_dir / "logs" / "chat_log.jsonl",
+        chat_db_path=storage_dir / "logs" / "chats.sqlite",
         embedding_model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3"),
         embedding_device=os.getenv("EMBEDDING_DEVICE", "auto"),
         llm_provider=os.getenv("LLM_PROVIDER", "gemini").lower(),
@@ -79,6 +84,10 @@ def get_settings() -> Settings:
         security_dir=storage_dir / "security",
         mock_db_path=storage_dir / "mock" / "brightnest.sqlite",
         order_lookup_limit=int(os.getenv("ORDER_LOOKUP_LIMIT", "5")),
+        assistants=_list("ASSISTANTS", "internal,external"),
+        widget_origins=_list("WIDGET_ORIGINS", ""),
+        trust_proxy=_flag("TRUST_PROXY", False),
+        web_dir=PROJECT_ROOT / "web",
     )
 
 
@@ -88,3 +97,8 @@ def _flag(name: str, default: bool) -> bool:
     if value is None or not value.strip():
         return default
     return value.strip().lower() in ("1", "true", "on", "yes")
+
+
+def _list(name: str, default: str) -> tuple[str, ...]:
+    """Read a comma-separated setting."""
+    return tuple(v.strip() for v in os.getenv(name, default).split(",") if v.strip())

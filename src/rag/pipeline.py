@@ -11,12 +11,12 @@
       -> log -> Answer
 """
 
-import json
+import re
 import time
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from rag.chatlog import ChatLog, new_answer_id
 from rag.answer import GROUNDING_RULES, build_system_prompt, build_user_message, extract_citations
 from rag.config import Settings, get_settings
 from rag.embeddings import Embedder
@@ -56,11 +56,12 @@ class Answer:
     role: str | None = None
     flags: list[str] = field(default_factory=list)  # why something was blocked (for the log, not the user)
     tools_used: list[str] = field(default_factory=list)
+    id: str = ""         # random id, used to attach thumbs up / down feedback to this answer
 
 
 class Assistant:
     def __init__(self, profile: Profile, store: KnowledgeStore, embedder: Embedder, llm: LLMClient | None,
-                 log_path: Path | None = None, options: RetrievalOptions = RetrievalOptions(),
+                 chat_log: ChatLog | None = None, options: RetrievalOptions = RetrievalOptions(),
                  role: str | None = None, leak_detector: LeakDetector | None = None, max_question_chars: int = 1000,
                  toolbox: Toolbox | None = None):
         if set(store.allowed) != set(profile.collections_for(role)):
@@ -71,7 +72,7 @@ class Assistant:
         self.store = store
         self.embedder = embedder
         self.llm = llm
-        self.log_path = log_path
+        self.chat_log = chat_log
         self.options = options
         self.role = role
         self.leak_detector = leak_detector
@@ -100,7 +101,9 @@ class Assistant:
 
         def finish(answer: Answer) -> Answer:
             answer.latency_ms = int((time.perf_counter() - started) * 1000)
-            self._log(question, answer)
+            answer.id = new_answer_id()
+            if self.chat_log is not None:
+                self.chat_log.record(answer.id, question, answer)
             return answer
 
         def blank(status: str, text: str, flags: list[str] | None = None, query: str = "") -> Answer:
@@ -198,33 +201,6 @@ class Assistant:
         query = self.search_query(question, history)
         return retrieve(self.store, self.embedder, query, self.profile.top_k, self.options)
 
-    # ---------------------------------------------------------------- log
-
-    def _log(self, question: str, answer: Answer) -> None:
-        if self.log_path is None:
-            return
-        self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        record = {
-            "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "profile": answer.profile,
-            "role": answer.role,
-            "llm": answer.model,
-            "question": question,
-            "search_query": answer.search_query,
-            "status": answer.status,
-            "flags": answer.flags,
-            "tools_used": answer.tools_used,
-            "language": answer.language,
-            "answer": answer.text,
-            "cited": answer.cited,
-            "sources": [
-                {k: v for k, v in asdict(h).items() if k != "text"} for h in answer.sources
-            ],
-            "latency_ms": answer.latency_ms,
-        }
-        with self.log_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
 
 def retrieval_options(s: Settings) -> RetrievalOptions:
     reranker = None
@@ -233,6 +209,12 @@ def retrieval_options(s: Settings) -> RetrievalOptions:
     return RetrievalOptions(hybrid=s.retrieval_hybrid, merge_twins=s.retrieval_merge_twins, reranker=reranker,
                             rewrite=s.query_rewrite, split_questions=s.split_questions,
                             hide_superseded=s.hide_superseded)
+
+
+def company_contacts(profile: Profile) -> tuple[str, ...]:
+    """The company's own emails and phone numbers (in the hand-off text): these stay readable in the log."""
+    text = " ".join(profile.fallback_message.values())
+    return tuple(re.findall(r"[\w.+-]+@[\w.-]+\w", text) + re.findall(r"\+?\d[\d\s-]{7,}\d", text))
 
 
 def default_role(profile: Profile) -> str | None:
@@ -270,7 +252,7 @@ def build_assistant(profile_name: str, embedder: Embedder | None = None, llm: LL
         store=store,
         embedder=embedder or Embedder(s.embedding_model, s.embedding_device),
         llm=None if search_only else (llm or get_llm(s)),
-        log_path=s.log_path,
+        chat_log=ChatLog(s.chat_db_path, keep=company_contacts(profile)),
         options=retrieval_options(s),
         role=role,
         leak_detector=LeakDetector.for_collections(s.security_dir / "fingerprints.json", collections),

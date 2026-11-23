@@ -4,6 +4,7 @@ Run:  streamlit run app/streamlit_app.py
 
 The page calls the engine directly (no API) so the demo needs only one process. The API in api/main.py adds
 real sign-in with passwords and tokens; here you pick a demo user to see what each role can read.
+The Analytics page (sidebar) shows what people asked, what went unanswered, and the thumbs up / down.
 """
 
 import uuid
@@ -11,6 +12,7 @@ import uuid
 import streamlit as st
 
 from rag.auth import UserDirectory
+from rag.chatlog import ChatLog
 from rag.config import get_settings
 from rag.embeddings import Embedder
 from rag.guard import InputRejected, RateLimiter
@@ -64,6 +66,11 @@ def get_assistant(name: str, role: str | None) -> Assistant:
 
 
 @st.cache_resource
+def get_chat_log() -> ChatLog:
+    return ChatLog(settings.chat_db_path)
+
+
+@st.cache_resource
 def get_users() -> UserDirectory:
     return UserDirectory.from_file(settings.users_path)
 
@@ -74,12 +81,9 @@ def render_sources(answer_sources: list[dict], cited: list[int]) -> None:
     with st.expander(f"Sources ({len(cited)} cited, {len(answer_sources)} retrieved)"):
         for i, s in enumerate(answer_sources, start=1):
             mark = "✅ cited" if i in cited else "not cited"
-            st.markdown(
-                f"**[{i}] {s['title']}** · `{s['collection']}` · {s['language'].upper()} · "
-                f"updated {s['last_updated']} · score {s['score']:.3f} · {mark}  \n"
-                f"<small>{s['source']}</small>",
-                unsafe_allow_html=True,
-            )
+            st.markdown(f"**[{i}] {s['title']}** · `{s['collection']}` · {s['language'].upper()} · "
+                        f"updated {s['last_updated']} · score {s['score']:.3f} · {mark}")
+            st.caption(s["source"])
             st.caption(s["text"][:400] + ("..." if len(s["text"]) > 400 else ""))
 
 
@@ -99,11 +103,21 @@ def render_answer(msg: dict) -> None:
     if msg.get("tools_used"):
         st.caption("Tool used: " + ", ".join(msg["tools_used"]))
     st.caption(f"{msg['latency_ms'] / 1000:.1f}s · {msg['model'] or 'no LLM call'} · {status}")
+    if msg.get("id"):
+        # Thumbs up / down, saved in the chat log against this answer's id.
+        st.feedback("thumbs", key=f"feedback-{msg['id']}", on_change=save_feedback, args=(msg["id"],))
+
+
+def save_feedback(answer_id: str) -> None:
+    value = st.session_state.get(f"feedback-{answer_id}")
+    if value is not None:  # st.feedback: 1 = thumbs up, 0 = thumbs down
+        get_chat_log().add_feedback(answer_id, 1 if value == 1 else -1)
 
 
 def to_message_dict(answer: Answer, question: str) -> dict:
     return {
         "role": "assistant",
+        "id": answer.id,
         "content": answer.text,
         "status": answer.status,
         "handoff": answer.handoff,

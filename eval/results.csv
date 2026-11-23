@@ -37,3 +37,5 @@ date,label,profile,mode,models,n,hit,all,mrr,distinct,facts,correct,faithful,rel
 2026-11-23 13:52,phase5,internal,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,86,1.0,1.0,1.0,3.174,1.0,0.965,0.988,1.0,1.0,1.0,0.0,0.0,1.0,,,,,1
 2026-11-23 13:58,phase5,external,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,82,1.0,1.0,0.984,2.915,1.0,0.974,1.0,1.0,1.0,0.9,0.0,0.0,1.0,,,,,1
 2026-11-23 14:00,phase5,leak,answers+judge,gemini-3.1-flash-lite,38,,,,,,,,,,,,,,0.0,0.0,0.0,0.973,1
+2026-11-23 14:22,phase6-reindex,internal,retrieval-only,,86,1.0,1.0,1.0,3.116,,,,,,,,,,,,,,0
+2026-11-23 14:23,phase6-reindex,external,retrieval-only,,82,1.0,1.0,0.984,2.805,,,,,,,,,,,,,,0
