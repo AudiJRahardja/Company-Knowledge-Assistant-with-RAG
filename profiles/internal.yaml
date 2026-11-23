@@ -9,6 +9,7 @@ role_collections:        # extra collections per role. Inside "restricted", each
   manager: [restricted]  # (salary bands: hr only; manager guidelines: managers and hr), checked in the store.
   hr: [restricted]
 top_k: 5
+tools: [leave_balance, my_manager, create_ticket]   # see src/rag/tools.py
 
 system_prompt: |
   You are the internal helper for employees of Brightnest Home & Living, an Indonesian home and kitchen

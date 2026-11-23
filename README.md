@@ -10,8 +10,8 @@ single retrieval-augmented generation (RAG) engine:
 
 Both answer in English or Bahasa Indonesia, using only the company documents, with numbered citations.
 
-> Status: **Phase 4 (trust and security) done.** Tools (leave balance, order status) and deployment come
-> next. See [docs/PLAN.md](docs/PLAN.md).
+> Status: **Phase 5 (tools) done.** Polish (feedback, analytics, chat widget, Docker) comes next.
+> See [docs/PLAN.md](docs/PLAN.md).
 
 ## How it works
 
@@ -30,6 +30,7 @@ question → assistant (internal | external) + role (employee | manager | hr | a
   → keep one copy of each section (EN or ID, not both); leave out outdated policy versions
   → reranker (bge-reranker-v2-m3) picks the best 5 of ~20 candidates
   → numbered sources → LLM (Gemini or Ollama) → answer with [1] [2] citations
+    (or the LLM asks for a tool → our code runs it → its result becomes one more source → answer)
   → output check: no system prompt, no internal contacts / figures / names  → withheld
   → no citations? → "I don't know" + who to contact, in the user's language
 ```
@@ -56,6 +57,39 @@ loaded cannot leak. So the protections are layered, strongest first:
 
 `tests/test_security.py`, `tests/test_store.py` and `tests/test_api.py` check each layer, and the leak test
 set (`eval/leak_tests.jsonl`) attacks them end to end.
+
+## Tools
+
+Documents answer "what is the policy?". Tools answer "what about *me*?" and do things. Data comes from a
+mock company database (`python -m rag.mockdb` creates `storage/mock/brightnest.sqlite`; the tools also
+create it on first use).
+
+| Assistant | Tool | Example |
+|---|---|---|
+| Internal | `leave_balance` | "How many leave days do I have left?" |
+| Internal | `my_manager` | "Siapa atasan saya?" |
+| Internal | `create_ticket` | "Please open an IT ticket: my laptop screen is cracked." |
+| External | `order_status` | "Where is order BN-2026-104233? My e-mail is rina.setiawati@example.com" |
+| External | `store_hours` | "Is the Kemang store open on 20 March 2026?" (first day of Idul Fitri: closed) |
+| External | `support_handoff` | "I'd like a person to contact me about a refund. I'm Budi, budi@example.com" |
+| External | `sales_lead` | "We are a hotel and want 200 bath towels..." |
+
+How it works: the tool list is part of the LLM's instructions. When a tool is needed, the LLM replies with
+only a small JSON request (`{"tool": "store_hours", "args": {...}}`). Our code checks the request, runs the
+tool, adds the result as one more numbered source, and the LLM answers from it with a citation. If details
+are missing (an order number, an e-mail), the assistant asks for them and the answer gets the status
+`needs_info`. One tool per question keeps it predictable.
+
+The security rules are in the code (`src/rag/tools.py`), not in the prompt:
+- "My" leave balance and "my" manager always use the signed-in user from the login token. The LLM can't
+  pass an employee id, so asking for a colleague's data is impossible.
+- An order needs the order number **and** the matching e-mail. A wrong e-mail, an unknown order and a
+  malformed number all get the same reply, so the tool can't be used to find out which orders exist.
+  Failed attempts are limited per visitor (`ORDER_LOOKUP_LIMIT`), and a verified order shows the city but
+  never the street address.
+- Customer tools never get employee data, and the profile loader refuses to give an anonymous assistant a
+  tool that needs a signed-in employee.
+- Every argument is checked (type, length, allowed values) before it reaches the database.
 
 ## Knowledge base
 
@@ -227,6 +261,28 @@ What happened along the way:
   know": the rewritten question matched store opening hours better than the IT help section. That is the
   1% wrongly refused.
 
+**Phase 5 (tools):**
+
+| Metric | Phase 4 | Phase 5 |
+|---|---|---|
+| Tool questions: called the right tool, or asked for missing info (14) | (new) | **100%** |
+| Tool answers with the right facts (dates, days left, reference numbers) | (new) | **100%** |
+| Leak rate (38 attacks incl. wrong-email order lookup, "skip the email check", a colleague's leave) | 0% | **0%** |
+| Key facts in the answer (internal / external) | 99% / 100% | **100% / 100%** |
+| Refuses when it shouldn't (internal / external) | 1% / 0% | **0% / 0%** |
+| Faithful to sources (judge, internal / external) | 96% / 99% | **99% / 100%** |
+
+What happened along the way:
+- The IT-hours follow-up from Phase 4 was found by search after all; the answering model only saw "What are
+  their opening hours?" and guessed "the stores". It now also gets the rewritten question.
+- The judge used to mark the bot's standard contact line (HR email, customer-service WhatsApp) as made up.
+  It is now told that this text is always allowed, which raised "faithful".
+- With tool results in the prompt, some English questions got Indonesian answers. The reply language is now
+  stated in every message.
+- The model sometimes called the order lookup without the email. The tool now reports the missing field
+  and the bot asks for it instead of guessing.
+- 3 questions out of 206 hit Gemini overload (free tier) in the final run and are left out of the numbers.
+
 ## Project layout
 
 ```
@@ -236,6 +292,7 @@ src/rag/                                          the shared engine
 app/streamlit_app.py                              demo UI with an assistant switch and demo users
 api/main.py                                       HTTP API: login, /chat/internal, /chat/external
 data/mock/users.yaml                              demo accounts (hashed passwords, roles)
+src/rag/tools.py, src/rag/mockdb.py               tools and the mock company database they use
 eval/                                             test sets, scoring, and results history
 tests/                                            unit and security tests
 ```

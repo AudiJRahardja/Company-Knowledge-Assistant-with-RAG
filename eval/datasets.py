@@ -20,12 +20,14 @@ FILES = {
     "leak": EVAL_DIR / "leak_tests.jsonl",
 }
 CATEGORIES = ("lookup", "multi_doc", "followup", "confusable", "outdated", "old_version", "unanswerable",
-              "role_access")
+              "role_access", "tool")
 # outdated     = a newer version exists; the answer must use the current one
 # old_version  = the user asks about the old rules on purpose; using the outdated document is correct
 # role_access  = only answerable for the role in the case's "role" field (manager / hr)
+# tool         = needs a tool (expected_tool); facts come from the mock database, not from documents
 ATTACKS = ("internal_info", "restricted_info", "internal_contacts", "prompt_injection", "role_escalation",
-           "order_wrong_email")
+           "order_wrong_email", "other_users_data")
+EVAL_USER = "rizky"  # who is signed in for internal questions that don't name a user
 LANGUAGES = ("en", "id")
 
 
@@ -46,6 +48,8 @@ class QualityCase:
     should_refuse: bool = False
     history: tuple[Message, ...] = ()
     role: str | None = None                    # who is asking (internal only); None = a regular employee
+    user: str | None = None                    # signed-in username for tools (internal only)
+    expected_tool: str | None = None           # the tool that should be used ("ask_user" = ask for details)
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,7 @@ class LeakCase:
     history: tuple[Message, ...] = field(default_factory=tuple)
     forbidden_docs: tuple[str, ...] = ()       # doc_ids that must not reach the LLM (when a role may open the
                                                # collection but not every document in it)
+    user: str | None = None                    # signed-in username (internal)
 
 
 def stem(case_id: str) -> str:
@@ -111,7 +116,10 @@ def load_quality(name: str, known_doc_ids: set[str] | None = None) -> list[Quali
             raise DatasetError(f"{where}: category must be one of {CATEGORIES}")
         refuse = bool(row.get("should_refuse", False))
         sources = tuple(row.get("expected_sources", []))
-        if refuse == bool(sources):
+        if row["category"] == "tool":
+            if not row.get("expected_tool") or refuse:
+                raise DatasetError(f"{where}: tool questions need expected_tool (and can't be should_refuse)")
+        elif refuse == bool(sources):
             raise DatasetError(f"{where}: give expected_sources, or set should_refuse (not both)")
         if known_doc_ids is not None and set(sources) - known_doc_ids:
             raise DatasetError(f"{where}: unknown doc_id(s) {sorted(set(sources) - known_doc_ids)}")
@@ -121,6 +129,8 @@ def load_quality(name: str, known_doc_ids: set[str] | None = None) -> list[Quali
             must_include=tuple(tuple(group) for group in row.get("must_include", [])),
             must_not_include=tuple(row.get("must_not_include", [])),
             should_refuse=refuse, history=_history(row), role=row.get("role"),
+            user=row.get("user") or (EVAL_USER if name == "internal" else None),
+            expected_tool=row.get("expected_tool"),
         ))
     _check_pairs([c.id for c in cases], name)
     return cases
@@ -143,6 +153,7 @@ def load_leak() -> list[LeakCase]:
             forbidden_strings=tuple(row.get("forbidden_strings", [])), role=row.get("role"),
             requires=row.get("requires"), history=_history(row),
             forbidden_docs=tuple(row.get("forbidden_docs", [])),
+            user=row.get("user") or (EVAL_USER if row["profile"] == "internal" else None),
         ))
     _check_pairs([c.id for c in cases], "leak")
     return cases

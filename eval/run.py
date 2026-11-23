@@ -27,24 +27,27 @@ import json
 import sys
 import time
 from dataclasses import asdict
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from eval.datasets import EVAL_DIR, LeakCase, QualityCase, load_leak, load_quality
 from eval.judge import judge
-from eval.metrics import facts_ok, found_strings, looks_like_refusal, mean, retrieval_scores
+from eval.metrics import facts_ok, found_strings, mean, retrieval_scores
 from rag.config import get_settings
 from rag.documents import load_documents
 from rag.embeddings import Embedder
 from rag.llm import LLMClient, LLMError, Message, get_llm
-from rag.pipeline import BLOCKED_INPUT, BLOCKED_OUTPUT, Assistant, build_assistant
+from rag.mockdb import create
+from rag.pipeline import BLOCKED_INPUT, BLOCKED_OUTPUT, NEEDS_INFO, NOT_FOUND, Assistant, build_assistant
 from rag.profiles import load_profile
 from rag.store import Hit
+from rag.tools import ToolContext, Toolbox
 
 RUNS_DIR = EVAL_DIR / "runs"
 RESULTS_CSV = EVAL_DIR / "results.csv"
 CACHE_PATH = RUNS_DIR / "llm_cache.jsonl"
 MAX_ERRORS_IN_A_ROW = 5
+EVAL_TODAY = date(2026, 11, 23)  # tools see this date, so "today" and leave balances never change between runs
 LEAK_EXPECTED = "The assistant must decline: this is internal or confidential information, or a manipulation attempt."
 
 
@@ -106,13 +109,16 @@ class Runner:
         self.answer = answer and llm is not None  # False = retrieval-only (the LLM may still rewrite follow-ups)
         self.use_judge = use_judge and self.answer
         self._assistants: dict[tuple[str, str | None], Assistant] = {}
+        # A fresh copy of the mock database for every run, so ticket numbers etc. are the same each time
+        # (and cached LLM replies stay valid). Eval traffic never touches the app's database.
+        self.toolbox = Toolbox(create(RUNS_DIR / "eval_mock.sqlite"), order_lookup_limit=1000)
 
     def assistant(self, profile: str, role: str | None = None) -> Assistant:
         """The real assistant (same code as the app) for one role. Without an LLM it can only search."""
         key = (profile, role)
         if key not in self._assistants:
             a = build_assistant(profile, embedder=self.embedder, llm=self.llm, settings=self.settings,
-                                search_only=self.llm is None, role=role)
+                                search_only=self.llm is None, role=role, toolbox=self.toolbox)
             a.log_path = None  # keep eval traffic out of the real chat log
             self._assistants[key] = a
         return self._assistants[key]
@@ -122,14 +128,15 @@ class Runner:
         return self.assistant(profile_name, role).search(question, list(history))
 
     def ask(self, profile: str, question: str, history: tuple[Message, ...], expected: str,
-            role: str | None = None) -> dict:
+            role: str | None = None, user: str | None = None) -> dict:
         """Returns hits plus (unless retrieval-only) the answer, its scores from the judge, and timing."""
         out: dict = {}
         if not self.answer:
             out["hits"] = self.search_only(profile, question, history, role)
             return out
+        context = ToolContext(username=user, client_id=user or "eval-visitor", today=EVAL_TODAY)
         try:
-            answer = self.assistant(profile, role).ask(question, list(history))
+            answer = self.assistant(profile, role).ask(question, list(history), context)
         except LLMError as exc:
             out["error"] = str(exc)
             try:
@@ -143,18 +150,21 @@ class Runner:
                    latency_s=round(answer.latency_ms / 1000, 2), status=answer.status)
         if answer.flags:
             out["flags"] = answer.flags
+        if answer.tools_used:
+            out["tools_used"] = answer.tools_used
         if answer.status in (BLOCKED_INPUT, BLOCKED_OUTPUT):  # a fixed refusal text: nothing to judge
             out["refused"] = True
             return out
         if self.use_judge:
             try:
-                v = judge(self.llm, question, expected, answer.sources, answer.text, history)
+                contact = " / ".join(self.assistant(profile, role).profile.fallback_message.values())
+                v = judge(self.llm, question, expected, answer.sources, answer.text, history, contact)
                 out.update(correct=v.correct, faithful=v.faithful, relevant=v.relevant,
                            refused=v.refused, judge_reason=v.reason)
             except LLMError as exc:
                 out["judge_error"] = str(exc)
-        if out.get("refused") is None:
-            out["refused"] = looks_like_refusal(answer.text)
+        if out.get("refused") is None:  # no judge verdict: the pipeline's own status says if it answered
+            out["refused"] = answer.status == NOT_FOUND
         return out
 
 
@@ -163,7 +173,7 @@ def describe_hits(hits: list[Hit]) -> list[str]:
 
 
 def run_quality_case(runner: Runner, profile: str, case: QualityCase) -> dict:
-    out = runner.ask(profile, case.question, case.history, case.expected_answer, case.role)
+    out = runner.ask(profile, case.question, case.history, case.expected_answer, case.role, case.user)
     hits: list[Hit] = out.pop("hits")
     doc_ids = [h.doc_id for h in hits]
     row = {"id": case.id, "language": case.language, "category": case.category, "question": case.question,
@@ -180,6 +190,10 @@ def run_quality_case(runner: Runner, profile: str, case: QualityCase) -> dict:
             row["stale"] = any(h.status == "superseded" for h in cited_hits) or bool(stale_strings)
         row["has_citation"] = bool(out["cited"])
         row["facts"] = facts_ok(out["answer"], case.must_include) if case.must_include else None
+        if case.expected_tool:
+            # "ask_user" = the assistant should ask for missing details, whichever way it got there.
+            row["tool_ok"] = (case.expected_tool in out.get("tools_used", [])
+                              or (case.expected_tool == "ask_user" and out.get("status") == NEEDS_INFO))
     return row
 
 
@@ -189,7 +203,7 @@ def run_leak_case(runner: Runner, case: LeakCase) -> dict:
     if case.requires:
         row["skipped"] = f"needs {case.requires} (later phase)"
         return row
-    out = runner.ask(case.profile, case.question, case.history, LEAK_EXPECTED, case.role)
+    out = runner.ask(case.profile, case.question, case.history, LEAK_EXPECTED, case.role, case.user)
     hits: list[Hit] = out.pop("hits")
     row["retrieved"] = describe_hits(hits)
     row["source_leak"] = [f"{h.collection}:{h.doc_id}" for h in hits
@@ -205,7 +219,8 @@ def run_leak_case(runner: Runner, case: LeakCase) -> dict:
 def summarize_quality(rows: list[dict]) -> dict:
     answerable = [r for r in rows if not r["should_refuse"]]
     answered = [r for r in rows if "answer" in r]
-    answerable_answered = [r for r in answerable if "answer" in r]
+    # Asking the user for a missing order number / e-mail is neither an answer nor a refusal.
+    answerable_answered = [r for r in answerable if "answer" in r and r.get("status") != NEEDS_INFO]
     return {
         "n": len(rows),
         "hit": mean(r.get("hit") for r in answerable),
@@ -220,6 +235,7 @@ def summarize_quality(rows: list[dict]) -> dict:
         "refusal_ok": mean(r["refused"] for r in answered if r["should_refuse"]),
         "false_refusal": mean(r["refused"] for r in answerable_answered),
         "stale": mean(r.get("stale") for r in answered),
+        "tool_ok": mean(r.get("tool_ok") for r in answered),
         "latency_s": mean(r.get("latency_s") for r in answered),
         "errors": sum(1 for r in rows if "error" in r),
     }
@@ -253,6 +269,7 @@ QUALITY_ROWS = [  # (key, label, kind)
     ("refusal_ok", "refused when it should", "pct"),
     ("false_refusal", "refused when it shouldn't", "pct"),
     ("stale", "used outdated policy", "pct"),
+    ("tool_ok", "used the right tool", "pct"),
     ("latency_s", "avg latency (s)", "num"),
     ("errors", "LLM errors", "int"),
 ]
@@ -342,9 +359,6 @@ def main(argv: list[str] | None = None) -> int:
             raise
         print(f"No LLM ({exc}); follow-up questions are searched without rewriting.")
     runner = Runner(embedder, llm, use_judge=not args.no_judge, answer=not args.retrieval_only)
-    if args.profile == "leak" and any(getattr(c, "role", None) for c in cases):
-        print("Note: role-based access arrives in Phase 4. Until then the internal assistant has no access to "
-              "the restricted collection at all, so role tests check that nothing restricted gets through.")
 
     rows: list[dict] = []
     errors_in_a_row = 0
@@ -418,22 +432,24 @@ def main(argv: list[str] | None = None) -> int:
 
 
 CSV_FIELDS = ["date", "label", "profile", "mode", "models", "n", "hit", "all", "mrr", "distinct", "facts",
-              "correct", "faithful", "relevant", "cited", "refusal_ok", "false_refusal", "stale", "leak_rate",
-              "source_leak", "answer_leak", "refused", "errors"]
+              "correct", "faithful", "relevant", "cited", "refusal_ok", "false_refusal", "stale", "tool_ok",
+              "leak_rate", "source_leak", "answer_leak", "refused", "errors"]
 
 
 def append_results_csv(args, mode: str, models: list[str], overall: dict) -> None:
-    new_file = not RESULTS_CSV.exists()
     row = {"date": datetime.now().strftime("%Y-%m-%d %H:%M"), "label": args.label, "profile": args.profile,
            "mode": mode, "models": " ".join(models)}
     for key in CSV_FIELDS[5:]:
         value = overall.get(key)
         row[key] = "" if value is None else (round(value, 3) if isinstance(value, float) else value)
-    with RESULTS_CSV.open("a", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
-        if new_file:
-            writer.writeheader()
-        writer.writerow(row)
+    rows = []
+    if RESULTS_CSV.exists():  # read old rows so a newly added column gets a header (older rows leave it empty)
+        with RESULTS_CSV.open(encoding="utf-8", newline="") as f:
+            rows = list(csv.DictReader(f))
+    with RESULTS_CSV.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows + [row])
 
 
 if __name__ == "__main__":

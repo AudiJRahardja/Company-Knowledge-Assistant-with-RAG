@@ -55,3 +55,11 @@ def test_merge_twins_keeps_best_copy_of_each_section():
     hits = [hit("d/id/#0", "id", "d/s0"), hit("d/en/#0", "en", "d/s0"), hit("d/en/#1", "en", "d/s1"),
             hit("old", "en", "")]
     assert [h.chunk_key for h in merge_twins(hits)] == ["d/id/#0", "d/en/#1", "old"]
+
+
+def test_followup_message_includes_what_the_question_means():
+    from rag.answer import build_user_message
+
+    msg = build_user_message("What are their opening hours?", [], "What are the IT help desk opening hours?")
+    assert msg.endswith("(In the context of the conversation, this means: What are the IT help desk opening hours?)")
+    assert "this means" not in build_user_message("Same question?", [], "Same question?")

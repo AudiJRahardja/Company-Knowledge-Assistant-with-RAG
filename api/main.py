@@ -32,6 +32,7 @@ from rag.config import Settings, get_settings
 from rag.guard import InputRejected, RateLimiter
 from rag.llm import LLMError, Message
 from rag.pipeline import Answer, Assistant, build_assistant
+from rag.tools import ToolContext
 
 log = logging.getLogger("api")
 
@@ -62,11 +63,12 @@ class Source(BaseModel):
 
 class ChatResponse(BaseModel):
     answer: str
-    status: str            # answered | not_found | blocked_input | blocked_output
+    status: str            # answered | not_found | needs_info | blocked_input | blocked_output
     language: str
     handoff: str           # who to contact when the assistant could not answer ("" otherwise)
     sources: list[Source]
     search_query: str
+    tools_used: list[str]
     latency_ms: int
     model: str
 
@@ -89,7 +91,8 @@ def to_response(answer: Answer) -> ChatResponse:
         sources=[Source(number=i, title=h.title, section=h.section, collection=h.collection,
                         last_updated=h.last_updated, cited=i in answer.cited)
                  for i, h in enumerate(answer.sources, start=1)],
-        search_query=answer.search_query, latency_ms=answer.latency_ms, model=answer.model,
+        search_query=answer.search_query, tools_used=answer.tools_used, latency_ms=answer.latency_ms,
+        model=answer.model,
     )
 
 
@@ -119,9 +122,10 @@ class AssistantPool:
                                                     settings=s, role=role)
         return self._assistants[key]
 
-    def ask(self, profile: str, role: str | None, question: str, history: list[Message]) -> Answer:
+    def ask(self, profile: str, role: str | None, question: str, history: list[Message],
+            context: ToolContext) -> Answer:
         with self.lock:
-            return self.get(profile, role).ask(question, history)
+            return self.get(profile, role).ask(question, history, context)
 
 
 # ---------------------------------------------------------------- app
@@ -158,10 +162,10 @@ def create_app(settings: Settings | None = None, pool=None, users: UserDirectory
         except AuthError as exc:
             raise HTTPException(401, str(exc), headers={"WWW-Authenticate": "Bearer"}) from exc
 
-    def answer(profile: str, role: str | None, body: ChatRequest) -> ChatResponse:
+    def answer(profile: str, role: str | None, body: ChatRequest, context: ToolContext) -> ChatResponse:
         history = [Message(m.role, m.content) for m in body.history]
         try:
-            return to_response(pool.ask(profile, role, body.question, history))
+            return to_response(pool.ask(profile, role, body.question, history, context))
         except InputRejected as exc:
             raise HTTPException(422, str(exc)) from exc
         except LLMError as exc:
@@ -183,13 +187,15 @@ def create_app(settings: Settings | None = None, pool=None, users: UserDirectory
 
     @app.post("/chat/external", response_model=ChatResponse)
     def chat_external(body: ChatRequest, request: Request) -> ChatResponse:
-        rate_limit("external", client_ip(request))
-        return answer("external", None, body)
+        ip = client_ip(request)
+        rate_limit("external", ip)
+        return answer("external", None, body, ToolContext(client_id=ip))
 
     @app.post("/chat/internal", response_model=ChatResponse)
     def chat_internal(body: ChatRequest, user: User = Depends(current_user)) -> ChatResponse:
         rate_limit("internal", user.username)
-        return answer("internal", user.role, body)
+        # The tools' "you" is the user from the signed token, never anything in the message.
+        return answer("internal", user.role, body, ToolContext(username=user.username, client_id=user.username))
 
     return app
 

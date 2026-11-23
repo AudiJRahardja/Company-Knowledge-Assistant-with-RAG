@@ -6,6 +6,7 @@ description: Answers customer questions about Brightnest products, stores, order
 auth: anonymous          # no login. Anonymous profiles may only use the public collection (enforced in code).
 collections: [public]
 top_k: 5
+tools: [order_status, store_hours, support_handoff, sales_lead]   # see src/rag/tools.py
 
 system_prompt: |
   You are the customer help assistant for Brightnest Home & Living, an Indonesian home and kitchen retailer

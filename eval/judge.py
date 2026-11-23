@@ -36,6 +36,9 @@ EXPECTED ANSWER (written by a human, the reference):
 SOURCES THE CHATBOT WAS GIVEN:
 {sources}
 
+CONTACT TEXT FROM THE CHATBOT'S OWN INSTRUCTIONS (it may always add this; it is not a claim to check):
+{contact}
+
 CHATBOT ANSWER:
 {answer}
 
@@ -47,7 +50,7 @@ Grade the chatbot answer:
   topic, or missing the main point. If the expected answer says the chatbot should not know or should
   decline, "yes" means it declined or said it doesn't know without inventing facts.
 - "faithful": is every factual claim supported by the sources above? "yes", "partial", or "no". General
-  politeness and contact/fallback details do not count as claims. A refusal with no claims is "yes".
+  politeness and the contact text above do not count as claims. A refusal with no claims is "yes".
 - "relevant": does it address what was asked? "yes", "partial", or "no".
 - "refused": true if it declines or says it doesn't know instead of answering, otherwise false.
 - "reason": one short sentence.
@@ -102,9 +105,9 @@ def format_history(history: list[Message] | tuple[Message, ...]) -> str:
 
 
 def judge(llm: LLMClient, question: str, expected: str, hits: list[Hit], answer: str,
-          history: list[Message] | tuple[Message, ...] = ()) -> Verdict:
+          history: list[Message] | tuple[Message, ...] = (), contact: str = "") -> Verdict:
     prompt = JUDGE_TEMPLATE.format(
         history=format_history(history), question=question, expected=expected or "(none given)",
-        sources=format_sources_for_judge(hits), answer=answer,
+        sources=format_sources_for_judge(hits), contact=contact or "(none)", answer=answer,
     )
     return parse_verdict(llm.generate(JUDGE_SYSTEM, [Message("user", prompt)]))

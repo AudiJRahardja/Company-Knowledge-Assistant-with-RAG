@@ -1,36 +1,39 @@
-date,label,profile,mode,models,n,hit,all,mrr,distinct,facts,correct,faithful,relevant,cited,refusal_ok,false_refusal,stale,leak_rate,source_leak,answer_leak,refused,errors
-2026-11-17 23:12,baseline,internal,retrieval-only,,74,0.97,0.97,0.927,2.581,,,,,,,,,,,,,0
-2026-11-17 23:13,baseline,external,retrieval-only,,72,1.0,0.871,0.929,2.528,,,,,,,,,,,,,0
-2026-11-17 23:13,baseline,leak,retrieval-only,,30,,,,,,,,,,,,,0.0,0.0,,,0
-2026-11-18 00:23,baseline,internal,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,74,0.97,0.97,0.927,2.581,0.969,0.966,1.0,0.962,1.0,1.0,0.0,0.014,,,,,0
-2026-11-21 11:18,baseline,leak,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,30,,,,,,,,,,,,,0.0,0.0,0.0,0.933,0
-2026-11-21 11:19,baseline,external,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,72,1.0,0.871,0.929,2.528,1.0,1.0,0.986,1.0,1.0,1.0,0.0,0.0,,,,,0
-2026-11-21 11:31,A-heading-chunks,internal,retrieval-only,,74,0.97,0.955,0.97,2.351,,,,,,,,,,,,,0
-2026-11-21 11:31,A-heading-chunks,external,retrieval-only,,72,1.0,0.952,1.0,2.069,,,,,,,,,,,,,0
-2026-11-21 11:32,B-merge-twins,internal,retrieval-only,,74,0.97,0.97,0.97,3.135,,,,,,,,,,,,,0
-2026-11-21 11:32,B-merge-twins,external,retrieval-only,,72,1.0,0.968,1.0,2.653,,,,,,,,,,,,,0
-2026-11-21 11:34,C-hybrid-bm25,internal,retrieval-only,,74,0.97,0.955,0.952,3.284,,,,,,,,,,,,,0
-2026-11-21 11:34,C-hybrid-bm25,external,retrieval-only,,72,1.0,0.968,0.957,2.958,,,,,,,,,,,,,0
-2026-11-21 11:37,D-reranker,internal,retrieval-only,,74,0.97,0.955,0.97,3.0,,,,,,,,,,,,,0
-2026-11-21 11:38,D-reranker,external,retrieval-only,,72,1.0,0.984,0.984,2.653,,,,,,,,,,,,,0
-2026-11-21 11:39,D-rerank-without-bm25,internal,retrieval-only,,74,0.97,0.97,0.97,3.054,,,,,,,,,,,,,0
-2026-11-21 11:40,D-rerank-without-bm25,external,retrieval-only,,72,1.0,0.968,0.976,2.639,,,,,,,,,,,,,0
-2026-11-21 11:43,E-rewrite-followups,internal,retrieval-only,,74,1.0,0.985,1.0,2.946,,,,,,,,,,,,,0
-2026-11-21 11:44,E-rewrite-followups,external,retrieval-only,,72,1.0,0.984,0.984,2.625,,,,,,,,,,,,,0
-2026-11-21 11:54,E-full-answers,internal,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,74,1.0,0.985,1.0,2.946,0.984,0.966,0.979,0.985,1.0,1.0,0.015,0.027,,,,,1
-2026-11-21 12:03,E-full-answers,external,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,72,1.0,0.984,0.984,2.625,1.0,0.986,0.993,1.0,1.0,1.0,0.0,0.0,,,,,0
-2026-11-21 12:37,E-full-answers,leak,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,30,,,,,,,,,,,,,0.0,0.0,0.0,1.0,0
-2026-11-21 12:45,F-split-questions,internal,retrieval-only,,74,1.0,1.0,1.0,3.027,,,,,,,,,,,,,0
-2026-11-21 12:46,F-split-questions,external,retrieval-only,,72,1.0,1.0,0.984,2.681,,,,,,,,,,,,,0
-2026-11-21 12:50,phase3,internal,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,74,1.0,1.0,1.0,3.027,1.0,0.979,0.979,1.0,1.0,1.0,0.0,0.027,,,,,0
-2026-11-21 12:52,phase3,external,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,72,1.0,1.0,0.984,2.681,1.0,0.986,0.993,1.0,1.0,1.0,0.0,0.0,,,,,0
-2026-11-21 12:54,phase3,leak,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,30,,,,,,,,,,,,,0.0,0.0,0.0,1.0,0
-2026-11-23 11:37,G-hide-outdated,internal,retrieval-only,,74,1.0,1.0,1.0,3.189,,,,,,,,,,,,,0
-2026-11-23 11:45,G-roles-versions,internal,retrieval-only,,80,1.0,1.0,1.0,3.138,,,,,,,,,,,,,0
-2026-11-23 11:46,G-roles-versions,leak,retrieval-only,,32,,,,,,,,,,,,,0.0,0.0,,,0
-2026-11-23 12:00,phase4-strict-prompt-check,internal,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,80,1.0,1.0,1.0,3.138,0.986,0.975,0.962,0.979,1.0,1.0,0.014,0.0,,,,,1
-2026-11-23 12:09,phase4-strict-prompt-check,external,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,72,1.0,1.0,0.984,2.611,1.0,0.993,0.993,1.0,1.0,1.0,0.0,0.0,,,,,0
-2026-11-23 12:11,phase4-strict-prompt-check,leak,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,32,,,,,,,,,,,,,0.0,0.0,0.0,0.906,0
-2026-11-23 12:14,phase4,internal,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,80,1.0,1.0,1.0,3.138,0.986,0.975,0.963,0.979,1.0,1.0,0.014,0.0,,,,,0
-2026-11-23 12:14,phase4,external,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,72,1.0,1.0,0.984,2.681,1.0,0.993,0.993,1.0,1.0,1.0,0.0,0.0,,,,,0
-2026-11-23 12:15,phase4,leak,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,32,,,,,,,,,,,,,0.0,0.0,0.0,0.906,0
+date,label,profile,mode,models,n,hit,all,mrr,distinct,facts,correct,faithful,relevant,cited,refusal_ok,false_refusal,stale,tool_ok,leak_rate,source_leak,answer_leak,refused,errors
+2026-11-17 23:12,baseline,internal,retrieval-only,,74,0.97,0.97,0.927,2.581,,,,,,,,,,,,,,0
+2026-11-17 23:13,baseline,external,retrieval-only,,72,1.0,0.871,0.929,2.528,,,,,,,,,,,,,,0
+2026-11-17 23:13,baseline,leak,retrieval-only,,30,,,,,,,,,,,,,,0.0,0.0,,,0
+2026-11-18 00:23,baseline,internal,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,74,0.97,0.97,0.927,2.581,0.969,0.966,1.0,0.962,1.0,1.0,0.0,0.014,,,,,,0
+2026-11-21 11:18,baseline,leak,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,30,,,,,,,,,,,,,,0.0,0.0,0.0,0.933,0
+2026-11-21 11:19,baseline,external,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,72,1.0,0.871,0.929,2.528,1.0,1.0,0.986,1.0,1.0,1.0,0.0,0.0,,,,,,0
+2026-11-21 11:31,A-heading-chunks,internal,retrieval-only,,74,0.97,0.955,0.97,2.351,,,,,,,,,,,,,,0
+2026-11-21 11:31,A-heading-chunks,external,retrieval-only,,72,1.0,0.952,1.0,2.069,,,,,,,,,,,,,,0
+2026-11-21 11:32,B-merge-twins,internal,retrieval-only,,74,0.97,0.97,0.97,3.135,,,,,,,,,,,,,,0
+2026-11-21 11:32,B-merge-twins,external,retrieval-only,,72,1.0,0.968,1.0,2.653,,,,,,,,,,,,,,0
+2026-11-21 11:34,C-hybrid-bm25,internal,retrieval-only,,74,0.97,0.955,0.952,3.284,,,,,,,,,,,,,,0
+2026-11-21 11:34,C-hybrid-bm25,external,retrieval-only,,72,1.0,0.968,0.957,2.958,,,,,,,,,,,,,,0
+2026-11-21 11:37,D-reranker,internal,retrieval-only,,74,0.97,0.955,0.97,3.0,,,,,,,,,,,,,,0
+2026-11-21 11:38,D-reranker,external,retrieval-only,,72,1.0,0.984,0.984,2.653,,,,,,,,,,,,,,0
+2026-11-21 11:39,D-rerank-without-bm25,internal,retrieval-only,,74,0.97,0.97,0.97,3.054,,,,,,,,,,,,,,0
+2026-11-21 11:40,D-rerank-without-bm25,external,retrieval-only,,72,1.0,0.968,0.976,2.639,,,,,,,,,,,,,,0
+2026-11-21 11:43,E-rewrite-followups,internal,retrieval-only,,74,1.0,0.985,1.0,2.946,,,,,,,,,,,,,,0
+2026-11-21 11:44,E-rewrite-followups,external,retrieval-only,,72,1.0,0.984,0.984,2.625,,,,,,,,,,,,,,0
+2026-11-21 11:54,E-full-answers,internal,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,74,1.0,0.985,1.0,2.946,0.984,0.966,0.979,0.985,1.0,1.0,0.015,0.027,,,,,,1
+2026-11-21 12:03,E-full-answers,external,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,72,1.0,0.984,0.984,2.625,1.0,0.986,0.993,1.0,1.0,1.0,0.0,0.0,,,,,,0
+2026-11-21 12:37,E-full-answers,leak,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,30,,,,,,,,,,,,,,0.0,0.0,0.0,1.0,0
+2026-11-21 12:45,F-split-questions,internal,retrieval-only,,74,1.0,1.0,1.0,3.027,,,,,,,,,,,,,,0
+2026-11-21 12:46,F-split-questions,external,retrieval-only,,72,1.0,1.0,0.984,2.681,,,,,,,,,,,,,,0
+2026-11-21 12:50,phase3,internal,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,74,1.0,1.0,1.0,3.027,1.0,0.979,0.979,1.0,1.0,1.0,0.0,0.027,,,,,,0
+2026-11-21 12:52,phase3,external,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,72,1.0,1.0,0.984,2.681,1.0,0.986,0.993,1.0,1.0,1.0,0.0,0.0,,,,,,0
+2026-11-21 12:54,phase3,leak,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,30,,,,,,,,,,,,,,0.0,0.0,0.0,1.0,0
+2026-11-23 11:37,G-hide-outdated,internal,retrieval-only,,74,1.0,1.0,1.0,3.189,,,,,,,,,,,,,,0
+2026-11-23 11:45,G-roles-versions,internal,retrieval-only,,80,1.0,1.0,1.0,3.138,,,,,,,,,,,,,,0
+2026-11-23 11:46,G-roles-versions,leak,retrieval-only,,32,,,,,,,,,,,,,,0.0,0.0,,,0
+2026-11-23 12:00,phase4-strict-prompt-check,internal,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,80,1.0,1.0,1.0,3.138,0.986,0.975,0.962,0.979,1.0,1.0,0.014,0.0,,,,,,1
+2026-11-23 12:09,phase4-strict-prompt-check,external,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,72,1.0,1.0,0.984,2.611,1.0,0.993,0.993,1.0,1.0,1.0,0.0,0.0,,,,,,0
+2026-11-23 12:11,phase4-strict-prompt-check,leak,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,32,,,,,,,,,,,,,,0.0,0.0,0.0,0.906,0
+2026-11-23 12:14,phase4,internal,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,80,1.0,1.0,1.0,3.138,0.986,0.975,0.963,0.979,1.0,1.0,0.014,0.0,,,,,,0
+2026-11-23 12:14,phase4,external,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,72,1.0,1.0,0.984,2.681,1.0,0.993,0.993,1.0,1.0,1.0,0.0,0.0,,,,,,0
+2026-11-23 12:15,phase4,leak,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,32,,,,,,,,,,,,,,0.0,0.0,0.0,0.906,0
+2026-11-23 13:52,phase5,internal,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,86,1.0,1.0,1.0,3.174,1.0,0.965,0.988,1.0,1.0,1.0,0.0,0.0,1.0,,,,,1
+2026-11-23 13:58,phase5,external,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,82,1.0,1.0,0.984,2.915,1.0,0.974,1.0,1.0,1.0,0.9,0.0,0.0,1.0,,,,,1
+2026-11-23 14:00,phase5,leak,answers+judge,gemini-3.1-flash-lite,38,,,,,,,,,,,,,,0.0,0.0,0.0,0.973,1

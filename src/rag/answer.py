@@ -41,9 +41,21 @@ def format_sources(hits: list[Hit]) -> str:
     return "\n\n".join(blocks)
 
 
-def build_user_message(question: str, hits: list[Hit]) -> str:
+REPLY_IN = {"en": "Answer in English.", "id": "Jawab dalam Bahasa Indonesia."}
+
+
+def build_user_message(question: str, hits: list[Hit], search_query: str = "", language: str = "") -> str:
+    """The sources, then the question. For a follow-up we also give the standalone version we searched for,
+    so "What are their opening hours?" is read as the IT help desk's hours, not the stores'. The reply
+    language (detected in code) is stated explicitly, because sources in the other language can otherwise
+    pull the model into replying in that language."""
     sources = format_sources(hits) if hits else "(no sources found)"
-    return f"<sources>\n{sources}\n</sources>\n\nQuestion: {question}"
+    message = f"<sources>\n{sources}\n</sources>\n\nQuestion: {question}"
+    if search_query and search_query.strip() != question.strip():
+        message += f"\n(In the context of the conversation, this means: {search_query})"
+    if language in REPLY_IN:
+        message += f"\n{REPLY_IN[language]}"
+    return message
 
 
 def extract_citations(answer: str, n_sources: int) -> list[int]:

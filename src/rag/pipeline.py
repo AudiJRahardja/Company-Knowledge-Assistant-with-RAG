@@ -4,7 +4,8 @@
       -> input checks: length, prompt-injection screening (also of earlier messages)   -> blocked
       -> rewrite follow-ups, retrieve chunks (only from collections this role may read)
       -> nothing found                                                                  -> not found + hand-off
-      -> LLM writes the answer from numbered sources
+      -> LLM writes the answer from numbered sources, or asks for a tool (see tools.py): then the tool runs,
+         its result becomes one more numbered source, and the LLM answers from that
       -> output checks: no system prompt, no fingerprints of unreadable documents       -> blocked
       -> "I don't know" answers are marked as not found and get the hand-off contact
       -> log -> Answer
@@ -28,6 +29,7 @@ from rag.reranker import get_reranker
 from rag.retrieval import RetrievalOptions, retrieve
 from rag.rewrite import rewrite_question
 from rag.store import Hit, KnowledgeStore
+from rag.tools import ASK_USER, ToolContext, Toolbox, describe_tools, parse_tool_call, today_for, tool_hit
 
 MAX_HISTORY_MESSAGES = 6  # last 3 question/answer pairs are sent along for follow-up questions
 
@@ -36,6 +38,7 @@ ANSWERED = "answered"
 NOT_FOUND = "not_found"            # the documents don't cover it: hand off to a person
 BLOCKED_INPUT = "blocked_input"    # the question tried to override the assistant's rules
 BLOCKED_OUTPUT = "blocked_output"  # the answer failed the output check and was replaced
+NEEDS_INFO = "needs_info"          # the assistant asks the user for something a tool needs (order number...)
 
 
 @dataclass
@@ -52,12 +55,14 @@ class Answer:
     handoff: str = ""    # who to contact, when the assistant could not answer
     role: str | None = None
     flags: list[str] = field(default_factory=list)  # why something was blocked (for the log, not the user)
+    tools_used: list[str] = field(default_factory=list)
 
 
 class Assistant:
     def __init__(self, profile: Profile, store: KnowledgeStore, embedder: Embedder, llm: LLMClient | None,
                  log_path: Path | None = None, options: RetrievalOptions = RetrievalOptions(),
-                 role: str | None = None, leak_detector: LeakDetector | None = None, max_question_chars: int = 1000):
+                 role: str | None = None, leak_detector: LeakDetector | None = None, max_question_chars: int = 1000,
+                 toolbox: Toolbox | None = None):
         if set(store.allowed) != set(profile.collections_for(role)):
             raise ValueError("the store's collections must match what the profile allows for this role")
         if store.role != role:
@@ -71,7 +76,10 @@ class Assistant:
         self.role = role
         self.leak_detector = leak_detector
         self.max_question_chars = max_question_chars
+        self.toolbox = toolbox if profile.tools else None
         self.system_prompt = build_system_prompt(profile)
+        if self.toolbox:
+            self.system_prompt += "\n" + describe_tools(profile.tools) + "\n"
         # 8-word pieces of the instructions, to notice if an answer starts quoting them. The fallback texts
         # are left out: the assistant is supposed to repeat those.
         self._prompt_shingles = shingles(f"{profile.system_prompt}\n{GROUNDING_RULES}")
@@ -79,7 +87,10 @@ class Assistant:
 
     # ---------------------------------------------------------------- main flow
 
-    def ask(self, question: str, history: list[Message] | None = None) -> Answer:
+    def ask(self, question: str, history: list[Message] | None = None,
+            context: ToolContext | None = None) -> Answer:
+        """Answer one question. `context` says who is asking (signed-in user, visitor id) for the tools;
+        it must come from the login token / request, never from anything the user typed."""
         if self.llm is None:
             raise ValueError("this assistant was built for search only (no LLM)")
         started = time.perf_counter()
@@ -105,15 +116,41 @@ class Assistant:
         # 2. Search.
         query = self.search_query(question, history)
         hits = retrieve(self.store, self.embedder, query, self.profile.top_k, self.options)
-        if not hits:
+        if not hits and not self.toolbox:
             return finish(blank(NOT_FOUND, self._not_found_text(language), query=query))
 
-        # 3. Answer.
-        messages = history + [Message("user", build_user_message(question, hits))]
-        text = self.llm.generate(self.system_prompt, messages)
+        # 3. Answer. With tools, the first reply may be a tool request instead of an answer.
+        first_message = build_user_message(question, hits, query, language)
+        text = self.llm.generate(self.system_prompt, history + [Message("user", first_message)])
+        tools_used: list[str] = []
+        needs_info = False
+        call = parse_tool_call(text) if self.toolbox else None
+        if call and call[0] == ASK_USER:
+            # The LLM needs more information from the user first (e.g. the e-mail for an order).
+            ask = str(call[1].get("question") or "").strip() or text
+            return finish(Answer(text=ask, sources=hits, cited=[], latency_ms=0, profile=self.profile.name,
+                                 model=self.llm.last_model, search_query=query, status=NEEDS_INFO,
+                                 language=language, role=self.role, tools_used=[ASK_USER]))
+        if call:
+            ctx = context or ToolContext()
+            result = self.toolbox.run(call[0], call[1], ctx, self.profile.tools)
+            tools_used.append(result.tool)
+            needs_info = result.needs_info  # e.g. order_status called without the e-mail: we'll be asking for it
+            hits = hits + [tool_hit(result, today_for(ctx))]
+            n = len(hits)
+            follow_up = (build_user_message(question, hits, query, language) +
+                         f"\n\nSource [{n}] is the result of the {result.tool} tool you asked for. Answer the user "
+                         f"now from the sources, citing [{n}]. Do not request another tool.")
+            text = self.llm.generate(self.system_prompt, history + [Message("user", follow_up)])
+            second = parse_tool_call(text)
+            if second and second[0] == ASK_USER:  # e.g. the tool said the e-mail is missing: ask for it
+                text = str(second[1].get("question") or "").strip() or self._not_found_text(language)
+                needs_info = True
+            elif second:  # only one tool per question; a second request is not followed
+                text = self._not_found_text(language)
         answer = Answer(text=text, sources=hits, cited=extract_citations(text, len(hits)), latency_ms=0,
                         profile=self.profile.name, model=self.llm.last_model, search_query=query,
-                        language=language, role=self.role)
+                        language=language, role=self.role, tools_used=tools_used)
 
         # 4. Output checks.
         flags = self.output_problems(text)
@@ -122,9 +159,12 @@ class Assistant:
             blocked.model = answer.model
             return finish(blocked)
 
-        # 5. No citation means the answer is not based on any document ("I don't know", "please ask HR",
+        # 5. A tool still needs details from the user: the answer is the question for those details.
+        if needs_info:
+            answer.status = NEEDS_INFO
+        # 6. No citation means the answer is not based on any document ("I don't know", "please ask HR",
         #    or an off-topic reply): mark it as not found and attach the hand-off contact.
-        if not answer.cited:
+        elif not answer.cited:
             answer.status = NOT_FOUND
             answer.handoff = self.profile.fallback(language)
         return finish(answer)
@@ -173,6 +213,7 @@ class Assistant:
             "search_query": answer.search_query,
             "status": answer.status,
             "flags": answer.flags,
+            "tools_used": answer.tools_used,
             "language": answer.language,
             "answer": answer.text,
             "cited": answer.cited,
@@ -198,9 +239,19 @@ def default_role(profile: Profile) -> str | None:
     return "employee" if profile.auth == "login" else None
 
 
+_toolboxes: dict[Path, Toolbox] = {}
+
+
+def get_toolbox(s: Settings) -> Toolbox:
+    """One toolbox per database, shared by all assistants (so the order-lookup limits are shared too)."""
+    if s.mock_db_path not in _toolboxes:
+        _toolboxes[s.mock_db_path] = Toolbox(s.mock_db_path, s.order_lookup_limit)
+    return _toolboxes[s.mock_db_path]
+
+
 def build_assistant(profile_name: str, embedder: Embedder | None = None, llm: LLMClient | None = None,
                     settings: Settings | None = None, search_only: bool = False,
-                    role: str | None = None) -> Assistant:
+                    role: str | None = None, toolbox: Toolbox | None = None) -> Assistant:
     """Create an assistant for one profile and one user role.
 
     The store only opens the collections that this profile allows for this role, and restricted chunks are
@@ -224,4 +275,5 @@ def build_assistant(profile_name: str, embedder: Embedder | None = None, llm: LL
         role=role,
         leak_detector=LeakDetector.for_collections(s.security_dir / "fingerprints.json", collections),
         max_question_chars=s.max_question_chars,
+        toolbox=toolbox or get_toolbox(s),
     )

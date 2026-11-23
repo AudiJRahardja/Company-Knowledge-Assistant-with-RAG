@@ -39,6 +39,9 @@ class Settings:
     jwt_ttl_minutes: int
     users_path: Path
     security_dir: Path
+    # Phase 5: tools
+    mock_db_path: Path
+    order_lookup_limit: int    # failed order verifications allowed per visitor per 10 minutes
 
 
 def get_settings() -> Settings:
@@ -74,6 +77,8 @@ def get_settings() -> Settings:
         jwt_ttl_minutes=int(os.getenv("JWT_TTL_MINUTES", "480")),
         users_path=PROJECT_ROOT / "data" / "mock" / "users.yaml",
         security_dir=storage_dir / "security",
+        mock_db_path=storage_dir / "mock" / "brightnest.sqlite",
+        order_lookup_limit=int(os.getenv("ORDER_LOOKUP_LIMIT", "5")),
     )
 
 
