@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Iterable
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
 
 from rag.chunking import Chunk
 from rag.documents import VISIBILITIES
@@ -86,12 +86,21 @@ atexit.register(close_all)  # close cleanly at exit instead of during interprete
 
 
 class KnowledgeStore:
-    """Read-only access to a fixed set of collections. Nothing else can be reached through it."""
+    """Read-only access to a fixed set of collections. Nothing else can be reached through it.
 
-    def __init__(self, allowed: Iterable[str], storage_dir: Path):
+    Restricted documents have a second lock: each restricted chunk lists the roles allowed to read it
+    (salary bands: hr; manager guidelines: manager and hr). A store that opens the restricted collection
+    must be created for one role, and only ever returns restricted chunks listing that role. This is
+    checked twice: as a filter in the database query, and again on every result.
+    """
+
+    def __init__(self, allowed: Iterable[str], storage_dir: Path, role: str | None = None):
         allowed = tuple(allowed)
         if not allowed:
             raise ValueError("a KnowledgeStore needs at least one collection")
+        if "restricted" in allowed and not role:
+            raise AccessDenied("the restricted collection can only be opened for a specific role")
+        self.role = role
         self._clients: dict[str, QdrantClient] = {}
         for name in allowed:
             client = _client_for(storage_dir, name)
@@ -110,18 +119,24 @@ class KnowledgeStore:
     def allowed(self) -> tuple[str, ...]:
         return tuple(self._clients)
 
+    def _role_filter(self, collection: str) -> Filter | None:
+        if collection != "restricted":
+            return None
+        return Filter(must=[FieldCondition(key="allowed_roles", match=MatchValue(value=self.role))])
+
+    def _readable(self, collection: str, payload: dict) -> bool:
+        """Second check on every result, in case the database filter ever fails."""
+        return collection != "restricted" or self.role in payload.get("allowed_roles", [])
+
     def search(self, collection: str, vector: list[float], limit: int) -> list[Hit]:
         """Vector (meaning) search."""
         self._check(collection)
         result = self._clients[collection].query_points(
-            collection_name=_QDRANT_COLLECTION, query=vector, limit=limit, with_payload=True
+            collection_name=_QDRANT_COLLECTION, query=vector, limit=limit, with_payload=True,
+            query_filter=self._role_filter(collection),
         )
-        return [
-            Hit(collection=collection, score=p.score,
-                **{k: p.payload[k] for k in _PAYLOAD_FIELDS},
-                **{k: p.payload[k] for k in _OPTIONAL_FIELDS if k in p.payload})
-            for p in result.points
-        ]
+        return [_to_hit(collection, p.score, p.payload) for p in result.points
+                if self._readable(collection, p.payload)]
 
     def keyword_search(self, collection: str, query: str, limit: int) -> list[Hit]:
         """BM25 keyword search. The score is the BM25 score (not comparable with vector scores)."""
@@ -133,20 +148,23 @@ class KnowledgeStore:
         return [replace(chunks[i], score=score) for i, score in index.top(query, limit)]
 
     def _all_chunks(self, collection: str) -> list[Hit]:
+        """Every chunk this store may read in a collection (used to build the keyword index)."""
         points, offset = [], None
         while True:
             batch, offset = self._clients[collection].scroll(
-                _QDRANT_COLLECTION, limit=256, offset=offset, with_payload=True, with_vectors=False
+                _QDRANT_COLLECTION, limit=256, offset=offset, with_payload=True, with_vectors=False,
+                scroll_filter=self._role_filter(collection),
             )
             points.extend(batch)
             if offset is None:
                 break
-        return [
-            Hit(collection=collection, score=0.0,
-                **{k: p.payload[k] for k in _PAYLOAD_FIELDS},
-                **{k: p.payload[k] for k in _OPTIONAL_FIELDS if k in p.payload})
-            for p in points
-        ]
+        return [_to_hit(collection, 0.0, p.payload) for p in points if self._readable(collection, p.payload)]
+
+
+def _to_hit(collection: str, score: float, payload: dict) -> Hit:
+    return Hit(collection=collection, score=score,
+               **{k: payload[k] for k in _PAYLOAD_FIELDS},
+               **{k: payload[k] for k in _OPTIONAL_FIELDS if k in payload})
 
 
 _PAYLOAD_FIELDS = (

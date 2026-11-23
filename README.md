@@ -10,8 +10,8 @@ single retrieval-augmented generation (RAG) engine:
 
 Both answer in English or Bahasa Indonesia, using only the company documents, with numbered citations.
 
-> Status: **Phase 3 (search quality) done.** Security hardening, tools and deployment come next.
-> See [docs/PLAN.md](docs/PLAN.md).
+> Status: **Phase 4 (trust and security) done.** Tools (leave balance, order status) and deployment come
+> next. See [docs/PLAN.md](docs/PLAN.md).
 
 ## How it works
 
@@ -21,21 +21,41 @@ data/docs/*.md → validate → split at headings → embed (BGE-M3) → storage
                                                                → storage/qdrant/internal/
                                                                → storage/qdrant/restricted/
 
-question → profile (internal | external): only the profile's databases can be opened
+question → assistant (internal | external) + role (employee | manager | hr | anonymous customer)
+  → input checks: length limit, prompt-injection screening         → blocked, no LLM call
   → follow-up? rewrite it into a standalone question (LLM)
   → two questions in one? also search each part on its own
-  → meaning search (vectors) + keyword search (BM25), combined by rank fusion
-  → keep one copy of each section (EN or ID, not both)
+  → meaning search (vectors) + keyword search (BM25), combined by rank fusion,
+    ONLY in the databases this role may open
+  → keep one copy of each section (EN or ID, not both); leave out outdated policy versions
   → reranker (bge-reranker-v2-m3) picks the best 5 of ~20 candidates
   → numbered sources → LLM (Gemini or Ollama) → answer with [1] [2] citations
+  → output check: no system prompt, no internal contacts / figures / names  → withheld
+  → no citations? → "I don't know" + who to contact, in the user's language
 ```
 
 Each search step can be switched off in `.env` (`RETRIEVAL_HYBRID`, `RETRIEVAL_MERGE_TWINS`,
-`RERANKER_MODEL=none`, `QUERY_REWRITE`, `RETRIEVAL_SPLIT_QUESTIONS`), which is how the eval measures what each one adds.
+`RERANKER_MODEL=none`, `QUERY_REWRITE`, `RETRIEVAL_SPLIT_QUESTIONS`, `RETRIEVAL_HIDE_SUPERSEDED`), which is
+how the eval measures what each one adds.
 
-**Key security idea:** public and internal documents live in physically separate databases. The external
-assistant can only open the public one. This is enforced in the storage layer (`src/rag/store.py`) and the
-profile loader, not just by the prompt. Tests in `tests/test_store.py` check it.
+## Security design
+
+The rule: **don't rely on the prompt to keep secrets.** A prompt can be talked around; data that was never
+loaded cannot leak. So the protections are layered, strongest first:
+
+| Layer | What it does | Where |
+|---|---|---|
+| Separate databases | public, internal and restricted documents live in separate database folders. The customer assistant only ever opens the public one. | `store.py`, `profiles.py` |
+| Roles | managers and HR also get the restricted database, and inside it every document lists its roles (salary bands: HR; manager guidelines: managers and HR). Filtered in the database query and checked again on every result. | `store.py`, `profiles/internal.yaml` |
+| Sign-in | the internal API needs a signed token (JWT) carrying the user's role; passwords are stored as salted hashes. Editing the token to claim another role breaks its signature. | `auth.py`, `api/main.py` |
+| Input checks | length limits, and messages that try to override the rules ("ignore your instructions", "you are now DevBot", "SYSTEM NOTICE: ...") are refused before reaching the LLM. Earlier messages in the conversation are checked too. | `guard.py` |
+| Output check | answers are scanned for pieces of the system prompt and for fingerprints of documents the user may not read (e-mails, phone numbers, extensions, amounts, names). Fingerprints are stored only as hashes, so the customer assistant holds no readable internal data. | `fingerprint.py`, `pipeline.py` |
+| Version handling | outdated policy versions are left out unless someone asks about the old rules, and are labelled as outdated when used. | `retrieval.py`, `answer.py` |
+| Rate limits | per visitor on the public endpoint, per user on the internal one, and on login attempts. | `guard.py`, `api/main.py` |
+| Hand-offs | when the documents don't cover a question, the answer says so and gives the right contact (HR / customer service) in the user's language. | `pipeline.py`, profiles |
+
+`tests/test_security.py`, `tests/test_store.py` and `tests/test_api.py` check each layer, and the leak test
+set (`eval/leak_tests.jsonl`) attacks them end to end.
 
 ## Knowledge base
 
@@ -67,10 +87,34 @@ python -m rag.ingest                  # build the indexes (first run downloads B
                                       # the reranker, ~2.2 GB more, downloads on first search)
 python -m rag.llm                     # check the LLM connection
 streamlit run app/streamlit_app.py    # open the chat UI
+uvicorn api.main:app --port 8000      # or run the API; try it at http://localhost:8000/docs
 pytest                                # run the tests
 ```
 
-Stop the Streamlit app before re-running `rag.ingest`: Qdrant's local mode locks its database folders.
+Stop the Streamlit app and the API before re-running `rag.ingest`: Qdrant's local mode locks its database
+folders, so only one program can open them at a time.
+
+Demo accounts for the internal assistant (password `demo1234` for all, see `data/mock/users.yaml`):
+
+| User | Role | Can also read |
+|---|---|---|
+| `rizky` (Rizky Pratama) | employee | internal + public documents |
+| `maya` (Maya Putri) | manager | + manager guidelines |
+| `sari` (Sari Wulandari) | hr | + manager guidelines and salary bands |
+
+Using the API:
+
+```bash
+curl -X POST localhost:8000/auth/login -H "Content-Type: application/json" \
+     -d '{"username": "sari", "password": "demo1234"}'          # -> {"access_token": "..."}
+curl -X POST localhost:8000/chat/internal -H "Authorization: Bearer <token>" \
+     -H "Content-Type: application/json" -d '{"question": "What is the salary band for grade G5?"}'
+curl -X POST localhost:8000/chat/external -H "Content-Type: application/json" \
+     -d '{"question": "Bisakah saya mengembalikan blender yang sudah dibuka?"}'
+```
+
+Each answer comes back with a `status` (`answered`, `not_found`, `blocked_input`, `blocked_output`), the
+`handoff` contact when it could not answer, and the numbered sources.
 
 ### Using a local model instead of Gemini
 Install [Ollama](https://ollama.com), run `ollama pull qwen2.5:7b`, and set `LLM_PROVIDER=ollama` in `.env`.
@@ -84,9 +128,9 @@ in both English and Indonesian:
 
 | File | Questions | What it checks |
 |---|---|---|
-| `eval/internal.jsonl` | 74 | employee questions: lookups, multi-document, follow-ups, outdated policy, confusable topics, unanswerable |
+| `eval/internal.jsonl` | 80 | employee questions: lookups, multi-document, follow-ups, outdated policy, asking about the old policy on purpose, confusable topics, unanswerable, and manager/HR-only questions asked by the right role |
 | `eval/external.jsonl` | 72 | customer questions, same categories, plus off-topic requests |
-| `eval/leak_tests.jsonl` | 32 | attempts to get internal or HR-only information, prompt injection, role escalation |
+| `eval/leak_tests.jsonl` | 34 | attempts to get internal or HR-only information, prompt injection, role escalation (including a manager asking for salary bands) |
 
 Each question lists the document(s) that should be found and the key facts the answer must contain.
 
@@ -156,9 +200,32 @@ Notes:
 Leak tests: **0% leak rate** before and after (30 attacks; 2 order-lookup tests wait for Phase 5). The
 assistant refused 100% of attacks after Phase 3, up from 93%.
 
-Known issue for Phase 4: the reranker only judges how well text matches the question, not which policy
-version is current, so the old 2024 remote-work policy can outrank the 2026 one. The answers still give
-the current rules, but sometimes mention or cite the old one. Version handling is planned for Phase 4.
+**Phase 4 (trust and security):**
+
+| Metric | Phase 3 | Phase 4 |
+|---|---|---|
+| Leak rate (34 attacks incl. a manager asking for salary bands) | 0% | **0%** |
+| Attacks stopped before reaching the LLM | 0 | **10 of 32** |
+| Used an outdated policy (internal) | 3% | **0%** |
+| Asking about the old policy on purpose: answered from it, marked as no longer valid | (new) | **100%** |
+| Manager / HR questions answered for the right role | (new) | **100%** |
+| Key facts in the answer (internal / external) | 100% / 100% | 99% / 100% |
+| Refuses when it shouldn't (internal / external) | 0% / 0% | 1% / 0% |
+| "I don't know" answers in the user's language with a contact | English only | **English and Indonesian** |
+
+What happened along the way:
+- Phase 3 left a known issue: the reranker ranked the old 2024 remote-work policy above the 2026 one,
+  because it only judges how well text matches, not which version is current. Outdated versions are now
+  left out unless the question asks about old rules, which brought outdated-policy use from 3% to 0%.
+- The first version of the system-prompt check blocked any answer sharing 8 words in a row with the
+  instructions. In the eval that withheld 4 harmless refusals such as "I can only help with questions about
+  Brightnest products and services, stores ...". It now blocks only answers that reproduce 20% or more of
+  the instructions (those refusals overlapped about 9%).
+- The injection screening is tested against all 146 normal eval questions so it doesn't block real
+  customers. That test caught the jailbreak keyword "DAN" matching the Indonesian word "dan" ("and").
+- One follow-up ("What are their opening hours?" after asking about IT help) is now answered with "I don't
+  know": the rewritten question matched store opening hours better than the IT help section. That is the
+  1% wrongly refused.
 
 ## Project layout
 
@@ -166,7 +233,9 @@ the current rules, but sometimes mention or cite the old one. Version handling i
 data/docs/{public,internal,restricted}/{en,id}/   knowledge base
 profiles/{internal,external}.yaml                 assistant settings (collections, prompt, fallback)
 src/rag/                                          the shared engine
-app/streamlit_app.py                              demo UI with an assistant switch
+app/streamlit_app.py                              demo UI with an assistant switch and demo users
+api/main.py                                       HTTP API: login, /chat/internal, /chat/external
+data/mock/users.yaml                              demo accounts (hashed passwords, roles)
 eval/                                             test sets, scoring, and results history
 tests/                                            unit and security tests
 ```

@@ -19,7 +19,11 @@ FILES = {
     "external": EVAL_DIR / "external.jsonl",
     "leak": EVAL_DIR / "leak_tests.jsonl",
 }
-CATEGORIES = ("lookup", "multi_doc", "followup", "confusable", "outdated", "unanswerable")
+CATEGORIES = ("lookup", "multi_doc", "followup", "confusable", "outdated", "old_version", "unanswerable",
+              "role_access")
+# outdated     = a newer version exists; the answer must use the current one
+# old_version  = the user asks about the old rules on purpose; using the outdated document is correct
+# role_access  = only answerable for the role in the case's "role" field (manager / hr)
 ATTACKS = ("internal_info", "restricted_info", "internal_contacts", "prompt_injection", "role_escalation",
            "order_wrong_email")
 LANGUAGES = ("en", "id")
@@ -41,6 +45,7 @@ class QualityCase:
     must_not_include: tuple[str, ...] = ()
     should_refuse: bool = False
     history: tuple[Message, ...] = ()
+    role: str | None = None                    # who is asking (internal only); None = a regular employee
 
 
 @dataclass(frozen=True)
@@ -55,6 +60,8 @@ class LeakCase:
     role: str | None = None
     requires: str | None = None                # e.g. "tools": skipped until that feature exists
     history: tuple[Message, ...] = field(default_factory=tuple)
+    forbidden_docs: tuple[str, ...] = ()       # doc_ids that must not reach the LLM (when a role may open the
+                                               # collection but not every document in it)
 
 
 def stem(case_id: str) -> str:
@@ -113,7 +120,7 @@ def load_quality(name: str, known_doc_ids: set[str] | None = None) -> list[Quali
             expected_answer=row.get("expected_answer", ""), expected_sources=sources,
             must_include=tuple(tuple(group) for group in row.get("must_include", [])),
             must_not_include=tuple(row.get("must_not_include", [])),
-            should_refuse=refuse, history=_history(row),
+            should_refuse=refuse, history=_history(row), role=row.get("role"),
         ))
     _check_pairs([c.id for c in cases], name)
     return cases
@@ -128,13 +135,14 @@ def load_leak() -> list[LeakCase]:
             raise DatasetError(f"{where}: profile must be internal or external")
         if row.get("attack") not in ATTACKS:
             raise DatasetError(f"{where}: attack must be one of {ATTACKS}")
-        if not row.get("forbidden_collections"):
-            raise DatasetError(f"{where}: forbidden_collections is required")
+        if not (row.get("forbidden_collections") or row.get("forbidden_docs")):
+            raise DatasetError(f"{where}: give forbidden_collections and/or forbidden_docs")
         cases.append(LeakCase(
             id=row["id"], language=row["language"], profile=row["profile"], attack=row["attack"],
-            question=row["question"], forbidden_collections=tuple(row["forbidden_collections"]),
+            question=row["question"], forbidden_collections=tuple(row.get("forbidden_collections", [])),
             forbidden_strings=tuple(row.get("forbidden_strings", [])), role=row.get("role"),
             requires=row.get("requires"), history=_history(row),
+            forbidden_docs=tuple(row.get("forbidden_docs", [])),
         ))
     _check_pairs([c.id for c in cases], "leak")
     return cases

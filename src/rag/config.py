@@ -30,6 +30,15 @@ class Settings:
     reranker_model: str  # empty = no reranker
     query_rewrite: bool
     split_questions: bool
+    hide_superseded: bool
+    # Phase 4: trust and security
+    max_question_chars: int
+    rate_limit_external: int   # requests per minute per visitor (IP address)
+    rate_limit_internal: int   # requests per minute per signed-in user
+    jwt_secret: str
+    jwt_ttl_minutes: int
+    users_path: Path
+    security_dir: Path
 
 
 def get_settings() -> Settings:
@@ -57,6 +66,14 @@ def get_settings() -> Settings:
         reranker_model=os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3").strip(),
         query_rewrite=_flag("QUERY_REWRITE", True),
         split_questions=_flag("RETRIEVAL_SPLIT_QUESTIONS", True),
+        hide_superseded=_flag("RETRIEVAL_HIDE_SUPERSEDED", True),
+        max_question_chars=int(os.getenv("MAX_QUESTION_CHARS", "1000")),
+        rate_limit_external=int(os.getenv("RATE_LIMIT_EXTERNAL", "10")),
+        rate_limit_internal=int(os.getenv("RATE_LIMIT_INTERNAL", "30")),
+        jwt_secret=os.getenv("JWT_SECRET", ""),
+        jwt_ttl_minutes=int(os.getenv("JWT_TTL_MINUTES", "480")),
+        users_path=PROJECT_ROOT / "data" / "mock" / "users.yaml",
+        security_dir=storage_dir / "security",
     )
 
 

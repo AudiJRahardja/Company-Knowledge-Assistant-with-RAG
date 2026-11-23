@@ -5,6 +5,7 @@
       -> keyword search (BM25) in every allowed collection     ┘
       -> combine the two lists with Reciprocal Rank Fusion
       -> merge translation twins (keep one copy of each section)
+      -> drop outdated (superseded) policy versions, unless the question asks about old rules
       -> reranker re-scores the best ~20 candidates (see reranker.py)
       -> top_k chunks
     A question that asks two things ("How much leave do I get, and how do I add the baby to my insurance?")
@@ -41,6 +42,7 @@ class RetrievalOptions:
     rerank_candidates: int = 20       # how many candidates the reranker re-scores
     rewrite: bool = True              # rewrite follow-up questions before searching (pipeline, needs the LLM)
     split_questions: bool = True      # also search each part of a multi-part question
+    hide_superseded: bool = True      # leave out outdated policy versions unless asked about
 
 
 def merge_twins(hits: list[Hit]) -> list[Hit]:
@@ -72,6 +74,18 @@ _ASK_ID = r"(?:bagaimana|berapa|kapan|apa|apakah|di mana|siapa|bisakah|bolehkah)
 # Split after a "?" or before "and/dan/or/atau" when a new question starts right after it.
 _SPLIT = re.compile(rf"\?\s+|[,;]?\s+(?:and|dan|or|atau)\s+(?={_ASK_EN}\b|{_ASK_ID}\b)", re.IGNORECASE)
 MAX_PARTS = 3
+
+# Words that show the user wants the OLD rules ("what was the remote work policy in 2024?").
+# Note: Indonesian "lama" alone means "long" ("berapa lama" = how long), so only "versi/aturan lama" count.
+_OLD_VERSION = re.compile(
+    r"\b(old|older|previous|former|earlier|outdated|superseded|used to|last year|20[01]\d|202[0-5]|"
+    r"sebelumnya|terdahulu|dulu|(?:versi|aturan|kebijakan|peraturan) lama)\b",
+    re.IGNORECASE,
+)
+
+
+def asks_about_old_version(question: str) -> bool:
+    return _OLD_VERSION.search(question) is not None
 
 
 def split_question(question: str) -> list[str]:
@@ -117,6 +131,8 @@ def _search(store: KnowledgeStore, embedder: Embedder, question: str, top_k: int
         hits = rrf(hits, by_keyword[:n])
     if options.merge_twins:
         hits = merge_twins(hits)
+    if options.hide_superseded and not asks_about_old_version(question):
+        hits = [h for h in hits if h.status != "superseded"]
     if options.reranker is not None:
         hits = options.reranker.rerank(question, hits[:options.rerank_candidates])
     return hits[:top_k]

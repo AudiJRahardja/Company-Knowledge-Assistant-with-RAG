@@ -37,7 +37,7 @@ from rag.config import get_settings
 from rag.documents import load_documents
 from rag.embeddings import Embedder
 from rag.llm import LLMClient, LLMError, Message, get_llm
-from rag.pipeline import Assistant, build_assistant
+from rag.pipeline import BLOCKED_INPUT, BLOCKED_OUTPUT, Assistant, build_assistant
 from rag.profiles import load_profile
 from rag.store import Hit
 
@@ -105,39 +105,47 @@ class Runner:
         self.llm = llm
         self.answer = answer and llm is not None  # False = retrieval-only (the LLM may still rewrite follow-ups)
         self.use_judge = use_judge and self.answer
-        self._assistants: dict[str, Assistant] = {}
+        self._assistants: dict[tuple[str, str | None], Assistant] = {}
 
-    def assistant(self, profile: str) -> Assistant:
-        """The real assistant (same retrieval code as the app). Without an LLM it can only search."""
-        if profile not in self._assistants:
+    def assistant(self, profile: str, role: str | None = None) -> Assistant:
+        """The real assistant (same code as the app) for one role. Without an LLM it can only search."""
+        key = (profile, role)
+        if key not in self._assistants:
             a = build_assistant(profile, embedder=self.embedder, llm=self.llm, settings=self.settings,
-                                search_only=self.llm is None)
+                                search_only=self.llm is None, role=role)
             a.log_path = None  # keep eval traffic out of the real chat log
-            self._assistants[profile] = a
-        return self._assistants[profile]
+            self._assistants[key] = a
+        return self._assistants[key]
 
-    def search_only(self, profile_name: str, question: str, history: tuple[Message, ...] = ()) -> list[Hit]:
-        return self.assistant(profile_name).search(question, list(history))
+    def search_only(self, profile_name: str, question: str, history: tuple[Message, ...] = (),
+                    role: str | None = None) -> list[Hit]:
+        return self.assistant(profile_name, role).search(question, list(history))
 
-    def ask(self, profile: str, question: str, history: tuple[Message, ...], expected: str) -> dict:
+    def ask(self, profile: str, question: str, history: tuple[Message, ...], expected: str,
+            role: str | None = None) -> dict:
         """Returns hits plus (unless retrieval-only) the answer, its scores from the judge, and timing."""
         out: dict = {}
         if not self.answer:
-            out["hits"] = self.search_only(profile, question, history)
+            out["hits"] = self.search_only(profile, question, history, role)
             return out
         try:
-            answer = self.assistant(profile).ask(question, list(history))
+            answer = self.assistant(profile, role).ask(question, list(history))
         except LLMError as exc:
             out["error"] = str(exc)
             try:
-                out["hits"] = self.search_only(profile, question, history)
+                out["hits"] = self.search_only(profile, question, history, role)
             except LLMError:  # the rewrite failed too: search without it
-                out["hits"] = self.search_only(profile, question)
+                out["hits"] = self.search_only(profile, question, role=role)
             return out
         if answer.search_query != question:
             out["search_query"] = answer.search_query
         out.update(hits=answer.sources, answer=answer.text, cited=answer.cited, model=answer.model,
-                   latency_s=round(answer.latency_ms / 1000, 2))
+                   latency_s=round(answer.latency_ms / 1000, 2), status=answer.status)
+        if answer.flags:
+            out["flags"] = answer.flags
+        if answer.status in (BLOCKED_INPUT, BLOCKED_OUTPUT):  # a fixed refusal text: nothing to judge
+            out["refused"] = True
+            return out
         if self.use_judge:
             try:
                 v = judge(self.llm, question, expected, answer.sources, answer.text, history)
@@ -155,11 +163,11 @@ def describe_hits(hits: list[Hit]) -> list[str]:
 
 
 def run_quality_case(runner: Runner, profile: str, case: QualityCase) -> dict:
-    out = runner.ask(profile, case.question, case.history, case.expected_answer)
+    out = runner.ask(profile, case.question, case.history, case.expected_answer, case.role)
     hits: list[Hit] = out.pop("hits")
     doc_ids = [h.doc_id for h in hits]
     row = {"id": case.id, "language": case.language, "category": case.category, "question": case.question,
-           "should_refuse": case.should_refuse, "retrieved": describe_hits(hits),
+           "role": case.role, "should_refuse": case.should_refuse, "retrieved": describe_hits(hits),
            "distinct_docs": len(set(doc_ids))}
     if case.expected_sources:
         row.update(retrieval_scores(doc_ids, case.expected_sources))
@@ -167,7 +175,9 @@ def run_quality_case(runner: Runner, profile: str, case: QualityCase) -> dict:
     if "answer" in out:
         cited_hits = [hits[i - 1] for i in out["cited"]]
         stale_strings = found_strings(out["answer"], case.must_not_include)
-        row["stale"] = any(h.status == "superseded" for h in cited_hits) or bool(stale_strings)
+        # Asking about the old rules on purpose (category old_version) makes using the old document correct.
+        if case.category != "old_version":
+            row["stale"] = any(h.status == "superseded" for h in cited_hits) or bool(stale_strings)
         row["has_citation"] = bool(out["cited"])
         row["facts"] = facts_ok(out["answer"], case.must_include) if case.must_include else None
     return row
@@ -179,10 +189,11 @@ def run_leak_case(runner: Runner, case: LeakCase) -> dict:
     if case.requires:
         row["skipped"] = f"needs {case.requires} (later phase)"
         return row
-    out = runner.ask(case.profile, case.question, case.history, LEAK_EXPECTED)
+    out = runner.ask(case.profile, case.question, case.history, LEAK_EXPECTED, case.role)
     hits: list[Hit] = out.pop("hits")
     row["retrieved"] = describe_hits(hits)
-    row["source_leak"] = [f"{h.collection}:{h.doc_id}" for h in hits if h.collection in case.forbidden_collections]
+    row["source_leak"] = [f"{h.collection}:{h.doc_id}" for h in hits
+                          if h.collection in case.forbidden_collections or h.doc_id in case.forbidden_docs]
     row.update(out)
     row["answer_leak"] = found_strings(out.get("answer", ""), case.forbidden_strings)
     row["leaked"] = bool(row["source_leak"] or row["answer_leak"])
@@ -208,7 +219,7 @@ def summarize_quality(rows: list[dict]) -> dict:
         "cited": mean(r["has_citation"] for r in answerable_answered if not r["refused"]),
         "refusal_ok": mean(r["refused"] for r in answered if r["should_refuse"]),
         "false_refusal": mean(r["refused"] for r in answerable_answered),
-        "stale": mean(r["stale"] for r in answered),
+        "stale": mean(r.get("stale") for r in answered),
         "latency_s": mean(r.get("latency_s") for r in answered),
         "errors": sum(1 for r in rows if "error" in r),
     }

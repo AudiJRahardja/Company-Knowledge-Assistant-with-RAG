@@ -73,3 +73,14 @@ def test_split_question_finds_the_parts():
         "Berapa lama cuti saya", "bagaimana mendaftarkan bayi ke asuransi"]
     assert split_question("What is the warranty on a blender?") == []
     assert split_question("Do you sell pots and pans?") == []           # "and" without a new question
+
+
+def test_old_version_questions_are_recognised():
+    from rag.retrieval import asks_about_old_version
+
+    assert asks_about_old_version("What was the remote work policy in 2024?")
+    assert asks_about_old_version("What were the previous core hours?")
+    assert asks_about_old_version("Bagaimana aturan lama soal kerja dari rumah?")
+    assert not asks_about_old_version("How many days can I work from home?")
+    assert not asks_about_old_version("Berapa lama cuti melahirkan?")  # "lama" here means "long"
+    assert not asks_about_old_version("When do I have to call in sick, before 09:00?")

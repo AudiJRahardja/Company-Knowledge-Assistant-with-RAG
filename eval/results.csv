@@ -25,3 +25,12 @@ date,label,profile,mode,models,n,hit,all,mrr,distinct,facts,correct,faithful,rel
 2026-11-21 12:50,phase3,internal,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,74,1.0,1.0,1.0,3.027,1.0,0.979,0.979,1.0,1.0,1.0,0.0,0.027,,,,,0
 2026-11-21 12:52,phase3,external,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,72,1.0,1.0,0.984,2.681,1.0,0.986,0.993,1.0,1.0,1.0,0.0,0.0,,,,,0
 2026-11-21 12:54,phase3,leak,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,30,,,,,,,,,,,,,0.0,0.0,0.0,1.0,0
+2026-11-23 11:37,G-hide-outdated,internal,retrieval-only,,74,1.0,1.0,1.0,3.189,,,,,,,,,,,,,0
+2026-11-23 11:45,G-roles-versions,internal,retrieval-only,,80,1.0,1.0,1.0,3.138,,,,,,,,,,,,,0
+2026-11-23 11:46,G-roles-versions,leak,retrieval-only,,32,,,,,,,,,,,,,0.0,0.0,,,0
+2026-11-23 12:00,phase4-strict-prompt-check,internal,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,80,1.0,1.0,1.0,3.138,0.986,0.975,0.962,0.979,1.0,1.0,0.014,0.0,,,,,1
+2026-11-23 12:09,phase4-strict-prompt-check,external,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,72,1.0,1.0,0.984,2.611,1.0,0.993,0.993,1.0,1.0,1.0,0.0,0.0,,,,,0
+2026-11-23 12:11,phase4-strict-prompt-check,leak,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,32,,,,,,,,,,,,,0.0,0.0,0.0,0.906,0
+2026-11-23 12:14,phase4,internal,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,80,1.0,1.0,1.0,3.138,0.986,0.975,0.963,0.979,1.0,1.0,0.014,0.0,,,,,0
+2026-11-23 12:14,phase4,external,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,72,1.0,1.0,0.984,2.681,1.0,0.993,0.993,1.0,1.0,1.0,0.0,0.0,,,,,0
+2026-11-23 12:15,phase4,leak,answers+judge,gemini-3.1-flash-lite gemini-3.5-flash-lite,32,,,,,,,,,,,,,0.0,0.0,0.0,0.906,0

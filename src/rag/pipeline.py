@@ -1,18 +1,27 @@
-"""The full question -> answer flow for one assistant.
+"""The full question -> answer flow for one assistant and one user role.
 
-    question -> retrieve chunks (only from the profile's collections) -> build prompt -> LLM
-             -> parse citations -> log -> Answer
+    question
+      -> input checks: length, prompt-injection screening (also of earlier messages)   -> blocked
+      -> rewrite follow-ups, retrieve chunks (only from collections this role may read)
+      -> nothing found                                                                  -> not found + hand-off
+      -> LLM writes the answer from numbered sources
+      -> output checks: no system prompt, no fingerprints of unreadable documents       -> blocked
+      -> "I don't know" answers are marked as not found and get the hand-off contact
+      -> log -> Answer
 """
 
 import json
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from rag.answer import build_system_prompt, build_user_message, extract_citations
+from rag.answer import GROUNDING_RULES, build_system_prompt, build_user_message, extract_citations
 from rag.config import Settings, get_settings
 from rag.embeddings import Embedder
+from rag.fingerprint import LeakDetector, extract_terms, hash_term
+from rag.guard import (BLOCKED_REPLY, check_question, detect_language, looks_like_injection, repeats_prompt,
+                       shingles)
 from rag.llm import LLMClient, Message, get_llm
 from rag.profiles import Profile, load_profile
 from rag.reranker import get_reranker
@@ -22,6 +31,12 @@ from rag.store import Hit, KnowledgeStore
 
 MAX_HISTORY_MESSAGES = 6  # last 3 question/answer pairs are sent along for follow-up questions
 
+# Answer.status values
+ANSWERED = "answered"
+NOT_FOUND = "not_found"            # the documents don't cover it: hand off to a person
+BLOCKED_INPUT = "blocked_input"    # the question tried to override the assistant's rules
+BLOCKED_OUTPUT = "blocked_output"  # the answer failed the output check and was replaced
+
 
 @dataclass
 class Answer:
@@ -30,43 +45,107 @@ class Answer:
     cited: list[int]     # 1-based numbers of the sources the answer actually cites
     latency_ms: int
     profile: str
-    model: str           # the LLM model that actually answered (may be a fallback model)
+    model: str           # the LLM model that actually answered (may be a fallback model); "" if none was called
     search_query: str = ""  # what was searched for (a follow-up question is rewritten to stand alone)
+    status: str = ANSWERED
+    language: str = "en"
+    handoff: str = ""    # who to contact, when the assistant could not answer
+    role: str | None = None
+    flags: list[str] = field(default_factory=list)  # why something was blocked (for the log, not the user)
 
 
 class Assistant:
     def __init__(self, profile: Profile, store: KnowledgeStore, embedder: Embedder, llm: LLMClient | None,
-                 log_path: Path | None = None, options: RetrievalOptions = RetrievalOptions()):
-        if set(store.allowed) != set(profile.collections):
-            raise ValueError("the store's collections must match the profile's collections exactly")
+                 log_path: Path | None = None, options: RetrievalOptions = RetrievalOptions(),
+                 role: str | None = None, leak_detector: LeakDetector | None = None, max_question_chars: int = 1000):
+        if set(store.allowed) != set(profile.collections_for(role)):
+            raise ValueError("the store's collections must match what the profile allows for this role")
+        if store.role != role:
+            raise ValueError("the store must be opened for the same role as the assistant")
         self.profile = profile
         self.store = store
         self.embedder = embedder
         self.llm = llm
         self.log_path = log_path
         self.options = options
+        self.role = role
+        self.leak_detector = leak_detector
+        self.max_question_chars = max_question_chars
         self.system_prompt = build_system_prompt(profile)
+        # 8-word pieces of the instructions, to notice if an answer starts quoting them. The fallback texts
+        # are left out: the assistant is supposed to repeat those.
+        self._prompt_shingles = shingles(f"{profile.system_prompt}\n{GROUNDING_RULES}")
+        self._own_terms = {hash_term(t) for text in profile.fallback_message.values() for t in extract_terms(text)}
+
+    # ---------------------------------------------------------------- main flow
 
     def ask(self, question: str, history: list[Message] | None = None) -> Answer:
         if self.llm is None:
             raise ValueError("this assistant was built for search only (no LLM)")
         started = time.perf_counter()
+        question = check_question(question, self.max_question_chars)  # raises InputRejected
+        history = list(history or [])[-MAX_HISTORY_MESSAGES:]
+        language = detect_language(question)
+
+        def finish(answer: Answer) -> Answer:
+            answer.latency_ms = int((time.perf_counter() - started) * 1000)
+            self._log(question, answer)
+            return answer
+
+        def blank(status: str, text: str, flags: list[str] | None = None, query: str = "") -> Answer:
+            return Answer(text=text, sources=[], cited=[], latency_ms=0, profile=self.profile.name, model="",
+                          search_query=query or question, status=status, language=language,
+                          handoff=self.profile.fallback(language), role=self.role, flags=flags or [])
+
+        # 1. Input screening: the question and every earlier user message.
+        if looks_like_injection(question) or any(m.role == "user" and looks_like_injection(m.content)
+                                                 for m in history):
+            return finish(blank(BLOCKED_INPUT, BLOCKED_REPLY[language], ["prompt_injection"]))
+
+        # 2. Search.
         query = self.search_query(question, history)
         hits = retrieve(self.store, self.embedder, query, self.profile.top_k, self.options)
-        messages = list(history or [])[-MAX_HISTORY_MESSAGES:]
-        messages.append(Message("user", build_user_message(question, hits)))
+        if not hits:
+            return finish(blank(NOT_FOUND, self._not_found_text(language), query=query))
+
+        # 3. Answer.
+        messages = history + [Message("user", build_user_message(question, hits))]
         text = self.llm.generate(self.system_prompt, messages)
-        answer = Answer(
-            text=text,
-            sources=hits,
-            cited=extract_citations(text, len(hits)),
-            latency_ms=int((time.perf_counter() - started) * 1000),
-            profile=self.profile.name,
-            model=self.llm.last_model,
-            search_query=query,
-        )
-        self._log(question, answer)
-        return answer
+        answer = Answer(text=text, sources=hits, cited=extract_citations(text, len(hits)), latency_ms=0,
+                        profile=self.profile.name, model=self.llm.last_model, search_query=query,
+                        language=language, role=self.role)
+
+        # 4. Output checks.
+        flags = self.output_problems(text)
+        if flags:
+            blocked = blank(BLOCKED_OUTPUT, BLOCKED_REPLY[language], flags, query)
+            blocked.model = answer.model
+            return finish(blocked)
+
+        # 5. No citation means the answer is not based on any document ("I don't know", "please ask HR",
+        #    or an off-topic reply): mark it as not found and attach the hand-off contact.
+        if not answer.cited:
+            answer.status = NOT_FOUND
+            answer.handoff = self.profile.fallback(language)
+        return finish(answer)
+
+    def output_problems(self, text: str) -> list[str]:
+        """Reasons this answer must not be shown (empty list = fine)."""
+        flags = []
+        if repeats_prompt(text, self._prompt_shingles):
+            flags.append("repeats_system_prompt")
+        if self.leak_detector is not None:
+            leaked = [t for t in self.leak_detector.leaked_terms(text) if hash_term(t) not in self._own_terms]
+            if leaked:
+                flags.append("leak:" + ",".join(t.split(":", 1)[0] for t in leaked))
+        return flags
+
+    def _not_found_text(self, language: str) -> str:
+        sorry = ("Maaf, saya tidak menemukan informasi tentang itu di dokumen kami." if language == "id"
+                 else "Sorry, I couldn't find information about that in our documents.")
+        return f"{sorry} {self.profile.fallback(language)}"
+
+    # ---------------------------------------------------------------- search
 
     def search_query(self, question: str, history: list[Message] | None = None) -> str:
         """The question to search for: follow-ups are rewritten to stand on their own (needs the LLM)."""
@@ -79,6 +158,8 @@ class Assistant:
         query = self.search_query(question, history)
         return retrieve(self.store, self.embedder, query, self.profile.top_k, self.options)
 
+    # ---------------------------------------------------------------- log
+
     def _log(self, question: str, answer: Answer) -> None:
         if self.log_path is None:
             return
@@ -86,9 +167,13 @@ class Assistant:
         record = {
             "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "profile": answer.profile,
+            "role": answer.role,
             "llm": answer.model,
             "question": question,
             "search_query": answer.search_query,
+            "status": answer.status,
+            "flags": answer.flags,
+            "language": answer.language,
             "answer": answer.text,
             "cited": answer.cited,
             "sources": [
@@ -105,18 +190,30 @@ def retrieval_options(s: Settings) -> RetrievalOptions:
     if s.reranker_model and s.reranker_model.lower() != "none":
         reranker = get_reranker(s.reranker_model, s.embedding_device)
     return RetrievalOptions(hybrid=s.retrieval_hybrid, merge_twins=s.retrieval_merge_twins, reranker=reranker,
-                            rewrite=s.query_rewrite, split_questions=s.split_questions)
+                            rewrite=s.query_rewrite, split_questions=s.split_questions,
+                            hide_superseded=s.hide_superseded)
+
+
+def default_role(profile: Profile) -> str | None:
+    return "employee" if profile.auth == "login" else None
 
 
 def build_assistant(profile_name: str, embedder: Embedder | None = None, llm: LLMClient | None = None,
-                    settings: Settings | None = None, search_only: bool = False) -> Assistant:
-    """Create an assistant whose store can only open the collections listed in its profile.
+                    settings: Settings | None = None, search_only: bool = False,
+                    role: str | None = None) -> Assistant:
+    """Create an assistant for one profile and one user role.
 
+    The store only opens the collections that this profile allows for this role, and restricted chunks are
+    filtered by role inside the store. Anonymous profiles (the customer assistant) never have a role.
     search_only=True skips creating the LLM client (used by the eval's --retrieval-only mode).
     """
     s = settings or get_settings()
     profile = load_profile(profile_name, s.profiles_dir)
-    store = KnowledgeStore(profile.collections, s.storage_dir)
+    if profile.auth == "anonymous" and role is not None:
+        raise ValueError(f"the {profile.name} assistant is anonymous and takes no role")
+    role = role or default_role(profile)
+    collections = profile.collections_for(role)
+    store = KnowledgeStore(collections, s.storage_dir, role=role)
     return Assistant(
         profile=profile,
         store=store,
@@ -124,4 +221,7 @@ def build_assistant(profile_name: str, embedder: Embedder | None = None, llm: LL
         llm=None if search_only else (llm or get_llm(s)),
         log_path=s.log_path,
         options=retrieval_options(s),
+        role=role,
+        leak_detector=LeakDetector.for_collections(s.security_dir / "fingerprints.json", collections),
+        max_question_chars=s.max_question_chars,
     )

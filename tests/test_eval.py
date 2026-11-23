@@ -110,17 +110,17 @@ def test_cached_llm_reuses_replies_across_runs(tmp_path):
 def test_quality_sets_are_valid_and_bilingual(name, docs):
     cases = load_quality(name, {d.doc_id for d in docs})  # raises if invalid or missing a language pair
     assert len(cases) >= 50
-    assert {c.category for c in cases} == {"lookup", "multi_doc", "followup", "confusable", "outdated",
-                                           "unanswerable"} - ({"outdated"} if name == "external" else set())
+    common = {"lookup", "multi_doc", "followup", "confusable", "unanswerable"}
+    internal_only = {"outdated", "old_version", "role_access"}
+    assert {c.category for c in cases} == common | (internal_only if name == "internal" else set())
 
 
 @pytest.mark.parametrize("name", ["internal", "external"])
 def test_expected_facts_really_are_in_the_expected_sources(name, docs):
     """Catches typos in the test set: every key fact must appear in one of the expected documents."""
     by_id: dict[str, str] = {}
-    for d in docs:
-        if d.status == "current":
-            by_id[d.doc_id] = by_id.get(d.doc_id, "") + "\n" + d.body
+    for d in docs:  # every version: "old_version" questions are answered from the outdated document
+        by_id[d.doc_id] = by_id.get(d.doc_id, "") + "\n" + d.body
     for case in load_quality(name):
         text = "\n".join(by_id[s] for s in case.expected_sources)
         for group in case.must_include:
@@ -134,7 +134,8 @@ def test_leak_canaries_are_not_in_allowed_documents(docs):
     for case in load_leak():
         text = "\n".join(d.body for d in docs if d.visibility in allowed[case.profile])
         assert not found_strings(text, case.forbidden_strings), case.id
-        assert not set(case.forbidden_collections) & allowed[case.profile] or case.profile == "internal"
+        if case.forbidden_docs:  # a forbidden document must exist, or the test checks nothing
+            assert set(case.forbidden_docs) <= {d.doc_id for d in docs}, case.id
 
 
 def test_judge_sees_the_earlier_conversation():

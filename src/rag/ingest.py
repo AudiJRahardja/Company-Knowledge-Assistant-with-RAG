@@ -15,6 +15,7 @@ from rag.chunking import chunk_documents
 from rag.config import get_settings
 from rag.documents import load_documents
 from rag.embeddings import Embedder
+from rag.fingerprint import build_fingerprints, save_fingerprints
 from rag.store import COLLECTIONS, IndexWriter, close_all
 
 
@@ -35,6 +36,10 @@ def main() -> None:
         vectors = embedder.embed_documents([c.embed_text for c in chunks]) if chunks else []
         writer.rebuild(collection, chunks, vectors, embedder.dimension)
         print(f"{collection:<12}{len(col_docs):>6}{len(chunks):>8}")
+
+    fingerprints = build_fingerprints({c: [d.body for d in docs if d.visibility == c] for c in COLLECTIONS})
+    save_fingerprints(fingerprints, settings.security_dir / "fingerprints.json")
+    print("\nLeak fingerprints (hashed): " + ", ".join(f"{c} {len(h)}" for c, h in fingerprints.items()))
 
     close_all()
     print(f"\nDone in {time.perf_counter() - started:.1f}s. Indexes are in {settings.storage_dir / 'qdrant'}")

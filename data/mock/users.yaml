@@ -1,0 +1,19 @@
+# Demo accounts for the internal assistant. Every password is: demo1234
+# Passwords are stored as salted PBKDF2 hashes (see src/rag/auth.py), never as plain text.
+# Phase 5 adds leave balances and managers for these people in a mock HR database.
+users:
+  rizky:
+    name: Rizky Pratama
+    role: employee
+    title: Sales associate, Kemang store
+    password_hash: pbkdf2_sha256$200000$064e980abacb3acc963da420410f09e3$b8684ac11381960841d77973ee5429a27d7065ace26f50e7ce2fae35eb155bfb
+  maya:
+    name: Maya Putri
+    role: manager
+    title: Finance Manager, head office
+    password_hash: pbkdf2_sha256$200000$e880ea091f78f0c824ed73339fcf819a$d1fd7b3e4393384092a213a627dea97f0578261d100505e4f02748a474740d30
+  sari:
+    name: Sari Wulandari
+    role: hr
+    title: Head of People, head office
+    password_hash: pbkdf2_sha256$200000$ff6f6d6c0fd5d12ced6594c8dcba7f75$8a888cd73ce68cb59adf6cc91e8539e088e44bad6879aa898caf20020eac96a7
